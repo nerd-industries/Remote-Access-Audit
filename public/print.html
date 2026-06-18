@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Remote Access Audit — Technician Quick Sheet</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  @page { size: letter portrait; margin: 12mm; }
+  html, body { font-family: "Segoe UI", Arial, sans-serif; color: #111827; }
+  body { font-size: 10px; line-height: 1.38; padding: 14px 18px; max-width: 800px; margin: 0 auto; }
+  h1 { font-size: 19px; color: #0f172a; }
+  h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: #1e3a5f;
+       border-bottom: 1.5px solid #cbd5e1; padding-bottom: 2px; margin: 9px 0 5px; }
+  .sub { color: #64748b; font-size: 10px; margin-top: 1px; }
+  .head { display: flex; justify-content: space-between; align-items: flex-end; border-bottom: 3px solid #0f172a; padding-bottom: 6px; }
+  .brand { font-size: 10px; color: #64748b; text-align: right; }
+  .cmd { background: #0f172a; color: #86efac; font-family: Consolas, monospace; font-size: 15px;
+         font-weight: 700; padding: 11px 14px; border-radius: 7px; margin: 7px 0; text-align: center; letter-spacing: .3px; }
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 0 22px; }
+  ol, ul { margin: 0 0 0 16px; }
+  li { margin-bottom: 2.5px; }
+  code { font-family: Consolas, monospace; background: #f1f5f9; padding: 0 3px; border-radius: 3px; font-size: 9.5px; }
+  table { width: 100%; border-collapse: collapse; font-size: 9px; margin-top: 2px; }
+  td { padding: 2px 4px; border-bottom: 1px solid #eef2f7; vertical-align: top; }
+  td:first-child { font-weight: 700; color: #0f172a; white-space: nowrap; }
+  .sev { display: inline-block; color: #fff; font-weight: 700; border-radius: 3px; padding: 1px 7px; font-size: 9px; }
+  .hi { background: #dc2626; } .me { background: #ea580c; } .lo { background: #2563eb; }
+  .note { background: #fffbeb; border-left: 3px solid #d97706; padding: 6px 9px; border-radius: 0 5px 5px 0; font-size: 9.5px; margin-top: 5px; }
+  .danger { background: #fef2f2; border-left: 3px solid #dc2626; padding: 6px 9px; border-radius: 0 5px 5px 0; font-size: 9.5px; }
+  .foot { margin-top: 9px; border-top: 1px solid #cbd5e1; padding-top: 4px; color: #94a3b8; font-size: 8.5px; text-align: center; }
+  .fallback { font-family: Consolas, monospace; font-size: 8.5px; color: #475569; word-break: break-all; }
+  @media print { body { padding: 0; } a { color: #111827; text-decoration: none; } }
+</style>
+</head>
+<body>
+
+  <div class="head">
+    <div>
+      <h1>🛡 Remote Access Audit</h1>
+      <div class="sub">Technician Quick Sheet — scan a PC for unauthorized remote-access software</div>
+    </div>
+    <div class="brand"><strong>Nerdy Neighbor</strong><br>audit.nerdyneighbor.net</div>
+  </div>
+
+  <h2>Run it</h2>
+  <div>On the customer's PC, click <strong>Start</strong>, type <strong>PowerShell</strong>, open <strong>Windows PowerShell</strong>, then paste this line and press Enter:</div>
+  <div class="cmd">irm audit.nerdyneighbor.net | iex</div>
+  <div>Click <strong>Yes</strong> on the blue User Account Control (UAC) prompt that appears. That's the only click needed to start.</div>
+
+  <div class="cols">
+    <div>
+      <h2>What happens</h2>
+      <ol>
+        <li>Downloads the <strong>latest</strong> version automatically (nothing to install or update).</li>
+        <li>Asks for Administrator rights once (<strong>UAC → Yes</strong>).</li>
+        <li>Runs all scans (1–2 min; longer on big drives — let it finish).</li>
+        <li>Opens the <strong>remediation window</strong> with every finding.</li>
+        <li>Saves an <strong>HTML report to the Desktop</strong> and opens it when you close the window.</li>
+      </ol>
+
+      <h2>What it checks</h2>
+      <table>
+        <tr><td>Processes</td><td>running remote-access / unsigned tools</td></tr>
+        <tr><td>Services</td><td>remote-control services &amp; bad paths</td></tr>
+        <tr><td>Network</td><td>connections on remote/C2 ports</td></tr>
+        <tr><td>Tasks</td><td>scheduled tasks launching RATs</td></tr>
+        <tr><td>Registry</td><td>startup (Run) entries</td></tr>
+        <tr><td>Folders</td><td>TeamViewer, AnyDesk, VNC, etc.</td></tr>
+        <tr><td>RDP</td><td>Remote Desktop on/off + security</td></tr>
+        <tr><td>ScreenConnect</td><td>incl. hidden LSA-DLL persistence</td></tr>
+        <tr><td>AppData</td><td>tools buried deep in user folders</td></tr>
+        <tr><td>Users</td><td>admin &amp; Remote Desktop accounts</td></tr>
+        <tr><td>Traffic</td><td>suspicious outbound / beaconing</td></tr>
+      </table>
+    </div>
+
+    <div>
+      <h2>Reading the results</h2>
+      <div>Each finding has a severity:</div>
+      <ul style="list-style:none; margin-left:0; margin-top:3px;">
+        <li><span class="sev hi">HIGH</span> &nbsp;Known remote tool or unsigned program in a hidden spot — investigate now.</li>
+        <li><span class="sev me">MEDIUM</span> &nbsp;Suspicious but needs context (e.g. odd location, management port).</li>
+        <li><span class="sev lo">LOW</span> &nbsp;Worth a look — e.g. an admin account, or unsigned exe buried in AppData.</li>
+      </ul>
+
+      <h2>Using the window</h2>
+      <ul>
+        <li><strong>▶ View fix script</strong> — see exactly what a fix will do before running it.</li>
+        <li><strong>Fix button</strong> (e.g. <em>Kill Process</em>, <em>Full Removal</em>) — runs that one fix in an Admin window; confirm when asked.</li>
+        <li><strong>📋 View Script</strong> — opens all fixes in Notepad to copy/save.</li>
+        <li><strong>⚡ Run ALL Fixes</strong> — runs every fix in turn (use carefully; each asks to confirm).</li>
+      </ul>
+
+      <div class="danger">
+        <strong>If a remote-access tool is confirmed and unauthorized:</strong>
+        <ol style="margin-top:2px;">
+          <li>Disconnect the PC from the internet.</li>
+          <li>Run the matching <strong>Fix</strong> / removal steps.</li>
+          <li>Have the customer change passwords from a <em>different</em> device.</li>
+          <li>Reboot if prompted (ScreenConnect DLL removal needs it).</li>
+        </ol>
+      </div>
+    </div>
+  </div>
+
+  <div class="note">
+    <strong>Notes.</strong> Legitimate remote tools are reported too — confirm each one is authorized before removing.
+    Always-on report copy is on the Desktop: <code>RemoteAccessAudit_&lt;date&gt;.html</code>.
+    If <code>irm</code> errors on a very old PC, run
+    <code>[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12</code> first, then paste the command again.
+  </div>
+
+  <div class="foot">
+    Fallback if the short link is unavailable:
+    <span class="fallback">irm -Headers @{Accept='application/vnd.github.raw'} https://api.github.com/repos/nerd-industries/Remote-Access-Audit/contents/RemoteAccessAudit.ps1 | iex</span>
+    &nbsp;·&nbsp; Nerdy Neighbor — Remote Access Audit
+  </div>
+
+</body>
+</html>
