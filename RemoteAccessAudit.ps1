@@ -1,139 +1,197 @@
-@echo off
-setlocal EnableDelayedExpansion
+# ============================================================
+#  Remote Access Audit  —  nerd industries
+# ------------------------------------------------------------
+#  Run it (paste into Windows PowerShell — normal OR admin):
+#
+#    irm -Headers @{Accept='application/vnd.github.raw'} https://api.github.com/repos/nerd-industries/Remote-Access-Audit/contents/RemoteAccessAudit.ps1 | iex
+#
+#  - Pulls the latest committed version every time (GitHub API,
+#    not the cached raw CDN) so you never run a stale copy.
+#  - Self-elevates with a single UAC prompt, runs every scan,
+#    opens the remediation window, and saves an HTML report.
+# ============================================================
 
-:: ============================================================
-:: Remote Access Audit Tool
-:: Double-click to run. Prompts for Admin automatically.
-:: HTML report saves to this same folder.
-:: ============================================================
+# Use TLS 1.2 for web calls on older Windows builds
+try {
+    [Net.ServicePointManager]::SecurityProtocol =
+        [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+} catch {}
 
-:: Re-launch as admin if not already elevated
-net session >nul 2>&1
-if %errorlevel% neq 0 (
-    echo Requesting Administrator access - please click Yes on the prompt...
-    powershell -Command "Start-Process -FilePath cmd -ArgumentList '/c \"%~f0\"' -Verb RunAs"
-    exit /b
-)
+# Canonical source — used to relaunch elevated as the exact same latest copy
+$RAA_Source = 'https://api.github.com/repos/nerd-industries/Remote-Access-Audit/contents/RemoteAccessAudit.ps1'
 
-echo.
-echo  ================================================
-echo    Remote Access Audit Tool  ^|  Running as Admin
-echo  ================================================
-echo.
+function Test-IsAdmin {
+    try {
+        $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+        return ([Security.Principal.WindowsPrincipal]$id).IsInRole(
+            [Security.Principal.WindowsBuiltInRole]::Administrator)
+    } catch { return $false }
+}
 
-:: Check PowerShell is available
-where powershell >nul 2>&1
-if %errorlevel% neq 0 (
-    echo ERROR: PowerShell not found. Requires Windows 7 or later.
-    pause & exit /b 1
-)
+# ── Self-elevation ──────────────────────────────────────────────────────────
+# When launched non-elevated via irm|iex there is no script file on disk, so we
+# relaunch by re-running the same one-liner inside an elevated PowerShell. The
+# elevated copy is fetched fresh from the API, so it is always the latest commit.
+if (-not (Test-IsAdmin)) {
+    Write-Host ""
+    Write-Host "  Remote Access Audit needs Administrator rights." -ForegroundColor Yellow
+    Write-Host "  Click YES on the Windows UAC prompt..."          -ForegroundColor Yellow
+    $relaunch = "[Net.ServicePointManager]::SecurityProtocol=" +
+                "[Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; " +
+                "irm -Headers @{Accept='application/vnd.github.raw'} '$RAA_Source' | iex"
+    $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($relaunch))
+    try {
+        Start-Process -FilePath 'powershell.exe' -Verb RunAs `
+            -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-NoExit','-EncodedCommand',$enc | Out-Null
+    } catch {
+        Write-Host "  Elevation cancelled — the audit cannot run without admin rights." -ForegroundColor Red
+    }
+    return
+}
 
-:: Set output directory to the folder containing this bat file
-set "OUTDIR=%~dp0"
-if "%OUTDIR:~-1%"=="\" set "OUTDIR=%OUTDIR:~0,-1%"
-
-:: Write the embedded PS1 to a temp file
-set "PSFILE=%TEMP%\RemoteAudit_%RANDOM%_%RANDOM%.ps1"
-echo [*] Preparing audit script...
-
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "$bat = [System.IO.File]::ReadAllLines('%~f0');" ^
-  "$start = -1;" ^
-  "for ($i = 0; $i -lt $bat.Length; $i++) { if ($bat[$i] -eq '::PSSTART') { $start = $i + 1; break } };" ^
-  "if ($start -lt 0) { Write-Host 'ERROR: Could not find PS1 content in bat file.' -ForegroundColor Red; exit 1 };" ^
-  "$psLines = New-Object 'System.Collections.Generic.List[string]';" ^
-  "for ($i = $start; $i -lt $bat.Length; $i++) { if ($bat[$i] -eq '::PSEND') { break }; $psLines.Add($bat[$i]) };" ^
-  "[System.IO.File]::WriteAllLines('%PSFILE%', $psLines, [System.Text.Encoding]::UTF8);" ^
-  "Write-Host '[*] Script extracted (' $psLines.Count 'lines)'"
-
-if not exist "%PSFILE%" (
-    echo ERROR: Failed to extract audit script. See error above.
-    pause & exit /b 1
-)
-
-echo [*] Running scan - please wait, this may take 1-2 minutes...
-echo.
-
-powershell -NoProfile -ExecutionPolicy Bypass -File "%PSFILE%" -OutDir "%OUTDIR%"
-
-del "%PSFILE%" >nul 2>&1
-
-echo.
-echo [*] Finished. The HTML report should be open in your browser.
-echo [*] If not, check this folder: %OUTDIR%
-echo.
-pause
-exit /b
-
-::PSSTART
-param([string]$OutDir = "C:\Temp")
-
+# ── Run configuration ───────────────────────────────────────────────────────
 $ErrorActionPreference = 'SilentlyContinue'
-$timestamp = Get-Date -Format 'yyyy-MM-dd_HH-mm'
+$ProgressPreference    = 'SilentlyContinue'
+$timestamp  = Get-Date -Format 'yyyy-MM-dd_HH-mm'
+$OutDir     = Join-Path $env:USERPROFILE 'Desktop'
 $reportFile = Join-Path $OutDir "RemoteAccessAudit_$timestamp.html"
 
 Write-Host ""
-Write-Host "  Remote Access Audit" -ForegroundColor Cyan
-Write-Host "  Saving to: $reportFile" -ForegroundColor Gray
+Write-Host "  Remote Access Audit  (running as Administrator)" -ForegroundColor Cyan
+Write-Host "  Computer: $env:COMPUTERNAME    User: $env:USERNAME" -ForegroundColor Gray
 Write-Host ""
 
-$ratNames = @(
-    'teamviewer','anydesk','logmein','bomgar','screenconnect','remotepc',
-    'splashtop','rustdesk','radmin','winvnc','realvnc','tightvnc','ultravnc',
-    'ammyy','dameware','atera','kaseya','pulseway','ninjaone','netsupport',
-    'ngrok','cloudflared','netcat','ncat','chisel','msra','ultraviewer','supremo'
+# ── Catalog of remote-access / remote-control tools ─────────────────────────
+# Matching is PRECISE — exact exe base name, service-name pattern, install-path
+# hint, or Authenticode signer — never loose substring matching. This is what
+# eliminates the false positives a keyword scanner produces.
+$RemoteTools = @(
+    @{ Name='TeamViewer';                  Exe=@('teamviewer','teamviewer_service','tv_w32','tv_x64'); Svc=@('teamviewer*'); Path=@('*\teamviewer*'); Signer=@('teamviewer'); Class='Commercial remote control' }
+    @{ Name='AnyDesk';                      Exe=@('anydesk'); Svc=@('anydesk*'); Path=@('*\anydesk*'); Signer=@('anydesk','philandro'); Class='Commercial remote control' }
+    @{ Name='ScreenConnect / ConnectWise';  Exe=@('screenconnect.clientservice','screenconnect.windowsclient','connectwisecontrol.client'); Svc=@('screenconnect*','connectwisecontrol*'); Path=@('*\screenconnect*','*\connectwisecontrol*','*\connectwise control*'); Signer=@('connectwise','screenconnect','elsinore'); Class='RMM / remote support (heavily abused in scams)' }
+    @{ Name='LogMeIn / GoTo';               Exe=@('logmein','lmiguardiansvc','logmeinsystray','ramaint'); Svc=@('logmein*'); Path=@('*\logmein*'); Signer=@('logmein','goto'); Class='Commercial remote control' }
+    @{ Name='Splashtop';                    Exe=@('sragent','srservice','strwinclt','splashtop'); Svc=@('splashtop*','sragent*'); Path=@('*\splashtop*'); Signer=@('splashtop'); Class='Commercial remote control' }
+    @{ Name='RustDesk';                     Exe=@('rustdesk'); Svc=@('rustdesk*'); Path=@('*\rustdesk*'); Signer=@('rustdesk','purslane'); Class='Open-source remote control (abused)' }
+    @{ Name='Radmin';                       Exe=@('radmin','rserver3','famitrfc'); Svc=@('rserver*','radmin*'); Path=@('*\radmin*'); Signer=@('famatech'); Class='Commercial remote control' }
+    @{ Name='VNC (Real/Tight/Ultra/Tiger)'; Exe=@('winvnc','winvnc4','vncserver','vncviewer','tvnserver','uvnc_service'); Svc=@('*vnc*'); Path=@('*\realvnc*','*\tightvnc*','*\ultravnc*','*\uvnc*','*\tigervnc*'); Signer=@('realvnc','tightvnc','glavsoft'); Class='VNC remote control' }
+    @{ Name='Ammyy Admin';                  Exe=@('aa_v3','ammyy'); Svc=@(); Path=@('*\ammyy*'); Signer=@(); Class='RAT (commonly abused in scams)' }
+    @{ Name='DameWare';                     Exe=@('dwrcs','dwrcst','dameware'); Svc=@('dwmrcs*'); Path=@('*\dameware*'); Signer=@('solarwinds','dameware'); Class='Commercial remote control' }
+    @{ Name='NetSupport Manager';           Exe=@('client32','pcicfgui'); Svc=@('client32*'); Path=@('*\netsupport*'); Signer=@('netsupport'); Class='Remote control (abused as a RAT)' }
+    @{ Name='Atera Agent';                  Exe=@('ateraagent'); Svc=@('ateraagent*'); Path=@('*\atera*'); Signer=@('atera'); Class='RMM agent' }
+    @{ Name='Kaseya / VSA';                 Exe=@('agentmon'); Svc=@('kaseya*'); Path=@('*\kaseya*'); Signer=@('kaseya'); Class='RMM agent' }
+    @{ Name='NinjaOne / NinjaRMM';          Exe=@('ninjarmmagent','ninjarmmagentpatcher'); Svc=@('ninjarmm*'); Path=@('*\ninjarmm*','*\ninjaone*'); Signer=@('ninja'); Class='RMM agent' }
+    @{ Name='Pulseway';                     Exe=@('pcmonitorsrv','pulseway'); Svc=@('pcmonitor*','pulseway*'); Path=@('*\pulseway*','*\pc monitor*'); Signer=@('mmsoft','pulseway'); Class='RMM agent' }
+    @{ Name='Supremo';                      Exe=@('supremo','supremosystem'); Svc=@('supremo*'); Path=@('*\supremo*'); Signer=@('nanosystems'); Class='Commercial remote control' }
+    @{ Name='UltraViewer';                  Exe=@('ultraviewer','ultraviewer_desktop'); Svc=@('ultraviewer*'); Path=@('*\ultraviewer*'); Signer=@('ductho','ultraviewer'); Class='Remote control (abused in scams)' }
+    @{ Name='RemotePC';                     Exe=@('remotepc','rpcservice'); Svc=@('remotepc*'); Path=@('*\remotepc*'); Signer=@('remotepc','idrive'); Class='Commercial remote control' }
+    @{ Name='Zoho Assist';                  Exe=@('zaservice','za_access'); Svc=@('zaservice*'); Path=@('*\zoho*'); Signer=@('zoho'); Class='Remote support' }
+    @{ Name='AnyViewer';                    Exe=@('anyviewer'); Svc=@('anyviewer*'); Path=@('*\anyviewer*'); Signer=@('aomei'); Class='Remote control (abused in scams)' }
+    @{ Name='Remote Utilities';             Exe=@('rutserv','rfusclient'); Svc=@('rmanservice*'); Path=@('*\remote utilities*'); Signer=@('remote utilities'); Class='Remote control (abused as a RAT)' }
+    @{ Name='GoToAssist / GoToMyPC';        Exe=@('g2comm','g2svc','gotoassist','gotomypc'); Svc=@('gotoassist*','gotomypc*'); Path=@('*\gotoassist*','*\gotomypc*'); Signer=@('goto','logmein'); Class='Remote support' }
+    @{ Name='BeyondTrust / Bomgar';         Exe=@('bomgar'); Svc=@('bomgar*','beyondtrust*'); Path=@('*\bomgar*','*\beyondtrust*'); Signer=@('bomgar','beyondtrust'); Class='Remote support' }
+    @{ Name='ngrok (tunnel)';               Exe=@('ngrok'); Svc=@('ngrok*'); Path=@('*\ngrok*'); Signer=@('ngrok'); Class='Tunneling tool (used to expose remote access)' }
+    @{ Name='Cloudflared (tunnel)';         Exe=@('cloudflared'); Svc=@('cloudflared*'); Path=@('*\cloudflared*'); Signer=@('cloudflare'); Class='Tunneling tool (used to expose remote access)' }
+    @{ Name='Chisel (tunnel)';              Exe=@('chisel'); Svc=@(); Path=@('*\chisel*'); Signer=@(); Class='Tunneling tool (used to expose remote access)' }
+    @{ Name='Netcat / Ncat';                Exe=@('ncat','netcat'); Svc=@(); Path=@(); Signer=@(); Class='Reverse-shell tool' }
 )
 
-# ── Whitelist: known legitimate cloud/business apps (excluded or LOW risk) ──────
-# Processes/services/paths matching these strings will be downgraded to LOW severity
-# or excluded entirely from the report rather than flagging as HIGH.
-$whitelist = @(
-    # Cloud storage / sync
-    'onedrive','dropbox','googledrive','googledrivesync','gdrive','box','icloud',
-    # VoIP / communications
-    'openphone','quo','vonage','ringcentral','zoom','webex','teams','slack',
-    # Remote management (legitimate IT tools - kept at LOW not excluded, so you still see them)
-    'connectwise','labtech',
-    # Common business/AV tools that share names with RAT keywords
-    'ninjaforms','kaseyadesk'
+# Keyword list for TEXT scans (registry values, scheduled-task command lines).
+# Only tokens long/specific enough to avoid collisions are included.
+$ratKeywords = @(
+    'teamviewer','anydesk','screenconnect','connectwise','logmein','splashtop',
+    'rustdesk','radmin','realvnc','tightvnc','ultravnc','tigervnc','winvnc',
+    'ammyy','dameware','netsupport','supremo','ultraviewer','remotepc','zohoassist',
+    'gotoassist','gotomypc','anyviewer','rutserv','bomgar','beyondtrust',
+    'ngrok','cloudflared','ateraagent','ninjarmm','kaseya','pulseway'
 )
 
-# These are completely benign and should be silently excluded (not even LOW)
-$silentExcludes = @(
-    'onedrive','dropbox','googledrive','googledrivesync','gdrive','box','icloud',
-    'openphone','quo','zoom','webex','teams','slack','vonage','ringcentral'
+# Benign comms / cloud-sync names that must never be flagged on name alone
+$benignNames = @(
+    'onedrive','dropbox','googledrive','googledrivesync','gdrive','icloud',
+    'zoom','webex','msteams','teams','slack','vonage','ringcentral','openphone',
+    'chrome','firefox','msedge','outlook','spotify','discord'
 )
-
 function Get-WhitelistMatch([string]$text) {
     if (-not $text) { return $null }
-    return $silentExcludes | Where-Object { $text -like "*$_*" } | Select-Object -First 1
+    $t = $text.ToLower()
+    return $benignNames | Where-Object { $t -like "*$_*" } | Select-Object -First 1
 }
 
-function Get-LowlistMatch([string]$text) {
-    if (-not $text) { return $null }
-    $notSilent = $whitelist | Where-Object { $silentExcludes -notcontains $_ }
-    return $notSilent | Where-Object { $text -like "*$_*" } | Select-Object -First 1
-}
-
+# Ports associated with remote-access / C2 traffic
 $ratPorts = @{
     3389='RDP (Remote Desktop)'; 5900='VNC'; 5938='TeamViewer'; 7070='AnyDesk'
     4444='Metasploit/RAT'; 4443='Reverse Shell'; 1337='RAT port'
     5985='WinRM HTTP'; 5986='WinRM HTTPS'; 22='SSH'; 23='Telnet'
-    4899='Radmin'; 55000='ScreenConnect'; 6667='Botnet C2'
+    4899='Radmin'; 6568='Remote Utilities'; 6129='DameWare'
+    8040='ScreenConnect'; 55000='ScreenConnect'; 6667='IRC/Botnet C2'
+}
+# Management ports that are commonly legitimate — flagged but at MEDIUM, not HIGH
+$mgmtPorts = @(22,3389,5985,5986)
+
+# Known install folders to check on disk
+$ratFolders = @(
+    "$env:APPDATA\TeamViewer", "$env:APPDATA\AnyDesk", "$env:PROGRAMFILES\TeamViewer",
+    "$env:PROGRAMFILES\AnyDesk", "$env:PROGRAMFILES\RealVNC", "$env:PROGRAMFILES\TightVNC",
+    "$env:PROGRAMFILES\UltraVNC", "$env:PROGRAMFILES\Radmin", "$env:PROGRAMFILES\ScreenConnect",
+    "$env:PROGRAMFILES\Supremo", "$env:PROGRAMFILES\UltraViewer", "$env:PROGRAMFILES\AnyViewer",
+    "${env:ProgramFiles(x86)}\TeamViewer", "${env:ProgramFiles(x86)}\AnyDesk",
+    "${env:ProgramFiles(x86)}\UltraViewer", "$env:LOCALAPPDATA\ngrok"
+)
+
+# ── Trust / catalog helpers ─────────────────────────────────────────────────
+$script:TrustCache = @{}
+function Get-FileTrust {
+    # Authenticode + version metadata for a file, cached per path.
+    param([string]$Path)
+    $info = [PSCustomObject]@{ Exists=$false; Signed=$false; SignerName=''; IsMicrosoft=$false; Company=''; Product='' }
+    if (-not $Path) { return $info }
+    $clean = ($Path -replace '"','').Trim()
+    # strip any trailing service arguments (e.g. "...\svc.exe" /run)
+    if ($clean -match '^(.*\.exe)\b') { $clean = $matches[1] }
+    if ($script:TrustCache.ContainsKey($clean)) { return $script:TrustCache[$clean] }
+    if (-not (Test-Path -LiteralPath $clean)) { $script:TrustCache[$clean] = $info; return $info }
+    $info.Exists = $true
+    try {
+        $sig = Get-AuthenticodeSignature -LiteralPath $clean -ErrorAction Stop
+        if ($sig.Status -eq 'Valid' -and $sig.SignerCertificate) {
+            $info.Signed = $true
+            $cn = (($sig.SignerCertificate.Subject -split ',')[0] -replace '^CN=','').Trim('" ')
+            $info.SignerName = $cn
+            if ($cn -match 'Microsoft (Corporation|Windows)') { $info.IsMicrosoft = $true }
+        }
+    } catch {}
+    try {
+        $vi = (Get-Item -LiteralPath $clean -ErrorAction Stop).VersionInfo
+        $info.Company = $vi.CompanyName
+        $info.Product = $vi.ProductName
+    } catch {}
+    $script:TrustCache[$clean] = $info
+    return $info
 }
 
-$ratFolders = @(
-    "$env:APPDATA\TeamViewer",
-    "$env:APPDATA\AnyDesk",
-    "$env:PROGRAMFILES\TeamViewer",
-    "$env:PROGRAMFILES\AnyDesk",
-    "$env:PROGRAMFILES\RealVNC",
-    "$env:PROGRAMFILES\TightVNC",
-    "$env:PROGRAMFILES\UltraVNC",
-    "$env:PROGRAMFILES\Radmin",
-    "$env:PROGRAMFILES\ScreenConnect",
-    "$env:LOCALAPPDATA\ngrok"
-)
+function Find-RemoteTool {
+    # Precise catalog match. Returns the catalog entry hashtable, or $null.
+    param([string]$Name, [string]$Display, [string]$Path, [string]$Signer)
+    $n    = if ($Name)    { $Name.ToLower() }    else { '' }
+    $disp = if ($Display) { $Display.ToLower() } else { '' }
+    $pth  = if ($Path)    { $Path.ToLower() }    else { '' }
+    $sgn  = if ($Signer)  { $Signer.ToLower() }  else { '' }
+    $base = $n -replace '\.exe$',''
+    if ($base -match '[\\/]') { $base = ($base -split '[\\/]')[-1] }
+    foreach ($t in $RemoteTools) {
+        foreach ($e in $t.Exe)    { if ($e -and $base -eq $e)                         { return $t } }
+        foreach ($s in $t.Svc)    { if ($s -and ($n -like $s -or $disp -like $s))     { return $t } }
+        foreach ($p in $t.Path)   { if ($p -and $pth -like $p.ToLower())              { return $t } }
+        foreach ($g in $t.Signer) { if ($g -and $sgn -and $sgn -like "*$g*")          { return $t } }
+    }
+    return $null
+}
+
+function Test-BadPath([string]$Path) {
+    # User-writable locations where legitimate background services rarely live.
+    if (-not $Path) { return $false }
+    return ($Path -like '*\AppData\*' -or $Path -like '*\Temp\*' -or $Path -like '*\Users\Public\*')
+}
 
 # ── Helper functions ──────────────────────────────────────────────────────────
 function Esc([string]$s) {
@@ -169,34 +227,32 @@ function Section([string]$title, [string]$intro, $items, [string[]]$headers, [sc
 }
 
 # ── Scan 1: Processes ─────────────────────────────────────────────────────────
-Write-Host "  [1/10] Scanning processes..." -ForegroundColor Yellow
-$allProcs = Get-Process | Select-Object Name, Id, Path, Company
+Write-Host "  [1/10] Scanning running processes..." -ForegroundColor Yellow
+$allProcs  = Get-Process | Select-Object Name, Id, Path, Company
 $suspProcs = New-Object 'System.Collections.Generic.List[object]'
 foreach ($p in $allProcs) {
-    # Skip silently whitelisted processes
-    $wlMatch = Get-WhitelistMatch $p.Name
-    if (-not $wlMatch) { $wlMatch = Get-WhitelistMatch $p.Path }
-    if ($wlMatch) { continue }
+    if (-not $p.Path) { continue }            # no image path = protected/system; nothing to assess
+    $trust = Get-FileTrust $p.Path
+    $tool  = Find-RemoteTool -Name $p.Name -Path $p.Path -Signer $trust.SignerName
+    $bad   = Test-BadPath $p.Path
 
-    $hit = $ratNames | Where-Object { $p.Name -like "*$_*" } | Select-Object -First 1
-    $badPath = $p.Path -and (
-        $p.Path -like '*\AppData\*' -or
-        $p.Path -like '*\Temp\*' -or
-        $p.Path -like '*\Users\Public\*'
-    )
-    # Check lowlist (IT tools kept at LOW)
-    $lowHit = Get-LowlistMatch $p.Name
-    if (-not $lowHit) { $lowHit = Get-LowlistMatch $p.Path }
+    # Microsoft-signed and benign signed comms apps are never flagged on name alone
+    if (-not $tool -and $trust.IsMicrosoft) { continue }
+    if (-not $tool -and -not $bad -and (Get-WhitelistMatch $p.Name)) { continue }
 
-    if ($hit -or $badPath -or $lowHit) {
-        $sev = if ($lowHit -and -not $badPath) { 'LOW' } elseif ($hit) { 'HIGH' } else { 'MEDIUM' }
+    if ($tool -or $bad) {
+        if     ($tool)               { $sev = 'HIGH';   $reason = "Known remote access tool: $($tool.Name) — $($tool.Class)" }
+        elseif (-not $trust.Signed)  { $sev = 'HIGH';   $reason = 'Unsigned executable running from a user-writable location' }
+        else                         { $sev = 'MEDIUM'; $reason = 'Runs from a user-writable location (AppData / Temp / Public)' }
+
+        $signerNote = if ($trust.Signed) { "Signed by: $($trust.SignerName)" } else { 'Digital signature: UNSIGNED' }
         $suspProcs.Add([PSCustomObject]@{
             Name    = $p.Name
             PID     = $p.Id
-            Path    = if ($p.Path) { $p.Path } else { 'N/A' }
-            Company = if ($p.Company) { $p.Company } else { 'Unknown' }
+            Path    = $p.Path
+            Company = if ($trust.Company) { $trust.Company } elseif ($p.Company) { $p.Company } else { 'Unknown' }
             Sev     = $sev
-            Reason  = if ($hit) { "Matches known remote access tool: $hit" } else { 'Running from suspicious path' }
+            Reason  = "$reason. $signerNote."
             Fix     = "Open Task Manager, find the process, right-click and choose End Task.`nOr run in Admin PowerShell: Stop-Process -Id $($p.Id) -Force"
         })
     }
@@ -205,33 +261,36 @@ Write-Host "    Found: $($suspProcs.Count)" -ForegroundColor Gray
 
 # ── Scan 2: Services ──────────────────────────────────────────────────────────
 Write-Host "  [2/10] Scanning services..." -ForegroundColor Yellow
-$allSvcs = Get-WmiObject Win32_Service
+$allSvcs  = Get-WmiObject Win32_Service
 $suspSvcs = New-Object 'System.Collections.Generic.List[object]'
 foreach ($s in $allSvcs) {
-    # Skip silently whitelisted services
-    $wlMatch = Get-WhitelistMatch $s.Name
-    if (-not $wlMatch) { $wlMatch = Get-WhitelistMatch $s.DisplayName }
-    if (-not $wlMatch) { $wlMatch = Get-WhitelistMatch $s.PathName }
-    if ($wlMatch) { continue }
+    # Pull the bare executable path out of the service command line
+    $binPath = ''
+    if ($s.PathName) {
+        $pn = $s.PathName.Trim()
+        if     ($pn -match '^\s*"([^"]+\.exe)"') { $binPath = $matches[1] }
+        elseif ($pn -match '^\s*([^\s]+\.exe)')  { $binPath = $matches[1] }
+        else   { $binPath = $pn }
+    }
+    $trust = Get-FileTrust $binPath
+    $tool  = Find-RemoteTool -Name $s.Name -Display $s.DisplayName -Path $s.PathName -Signer $trust.SignerName
+    $bad   = Test-BadPath $s.PathName
 
-    $hit = $ratNames | Where-Object { $s.Name -like "*$_*" -or $s.DisplayName -like "*$_*" } | Select-Object -First 1
-    $badPath = $s.PathName -and (
-        $s.PathName -like '*\AppData\*' -or
-        $s.PathName -like '*\Temp\*' -or
-        $s.PathName -like '*\Users\Public\*'
-    )
-    $lowHit = Get-LowlistMatch $s.Name
-    if (-not $lowHit) { $lowHit = Get-LowlistMatch $s.DisplayName }
+    if (-not $tool -and $trust.IsMicrosoft) { continue }
+    if (-not $tool -and -not $bad -and (Get-WhitelistMatch $s.Name)) { continue }
 
-    if ($hit -or $badPath -or $lowHit) {
-        $sev = if ($lowHit -and -not $badPath) { 'LOW' } elseif ($hit) { 'HIGH' } else { 'MEDIUM' }
+    if ($tool -or $bad) {
+        if     ($tool)               { $sev = 'HIGH';   $reason = "Known remote access service: $($tool.Name) — $($tool.Class)" }
+        elseif (-not $trust.Signed)  { $sev = 'HIGH';   $reason = 'Unsigned service binary in a user-writable location' }
+        else                         { $sev = 'MEDIUM'; $reason = 'Service binary runs from a user-writable location' }
+        $signerNote = if ($trust.Signed) { "Signed by: $($trust.SignerName)" } else { 'UNSIGNED binary' }
         $suspSvcs.Add([PSCustomObject]@{
             Name    = $s.Name
             Display = $s.DisplayName
             State   = $s.State
             Start   = $s.StartMode
             Sev     = $sev
-            Reason  = if ($hit) { "Matches known remote access service: $hit" } else { 'Service running from suspicious path' }
+            Reason  = "$reason. $signerNote."
             Fix     = "Run in Admin PowerShell:`nStop-Service '$($s.Name)' -Force`nSet-Service '$($s.Name)' -StartupType Disabled`nsc.exe delete '$($s.Name)'"
         })
     }
@@ -255,9 +314,10 @@ try {
                      $c.RemoteAddress -ne '::1' -and
                      $c.RemoteAddress -notlike '127.*'
             if (($pNote -or $rNote) -and $isExt) {
-                $note  = if ($pNote) { $pNote } else { $rNote }
-                $sev   = if ($c.State -eq 'Established') { 'HIGH' } else { 'MEDIUM' }
-                $pname = ($allProcs | Where-Object { $_.Id -eq $c.OwningProcess } | Select-Object -First 1).Name
+                $note   = if ($pNote) { $pNote } else { $rNote }
+                $isMgmt = ($mgmtPorts -contains $c.LocalPort) -or ($mgmtPorts -contains $c.RemotePort)
+                $sev    = if ($isMgmt) { 'MEDIUM' } elseif ($c.State -eq 'Established') { 'HIGH' } else { 'MEDIUM' }
+                $pname  = ($allProcs | Where-Object { $_.Id -eq $c.OwningProcess } | Select-Object -First 1).Name
                 $suspConns.Add([PSCustomObject]@{
                     Process = if ($pname) { $pname } else { 'Unknown' }
                     PID     = $c.OwningProcess
@@ -280,7 +340,7 @@ try {
             $localFull  = $parts[1]
             $remoteFull = $parts[2]
             $state      = $parts[3]
-            $pid        = [int]$parts[4]
+            $procId     = [int]$parts[4]
             $localPort  = 0
             $remotePort = 0
             if ($localFull  -match ':(\d+)$') { $localPort  = [int]$matches[1] }
@@ -290,18 +350,19 @@ try {
             $pNote = $ratPorts[$localPort]
             $rNote = $ratPorts[$remotePort]
             if (($pNote -or $rNote) -and $isExt) {
-                $note  = if ($pNote) { $pNote } else { $rNote }
-                $sev   = if ($state -eq 'ESTABLISHED') { 'HIGH' } else { 'MEDIUM' }
-                $pname = ($allProcs | Where-Object { $_.Id -eq $pid } | Select-Object -First 1).Name
+                $note   = if ($pNote) { $pNote } else { $rNote }
+                $isMgmt = ($mgmtPorts -contains $localPort) -or ($mgmtPorts -contains $remotePort)
+                $sev    = if ($isMgmt) { 'MEDIUM' } elseif ($state -eq 'ESTABLISHED') { 'HIGH' } else { 'MEDIUM' }
+                $pname  = ($allProcs | Where-Object { $_.Id -eq $procId } | Select-Object -First 1).Name
                 $suspConns.Add([PSCustomObject]@{
                     Process = if ($pname) { $pname } else { 'Unknown' }
-                    PID     = $pid
+                    PID     = $procId
                     Local   = $localFull
                     Remote  = $remoteFull
                     State   = $state
                     Note    = $note
                     Sev     = $sev
-                    Fix     = "Kill the process: Stop-Process -Id $pid -Force`nBlock the port in Windows Firewall > Advanced Settings > Outbound Rules."
+                    Fix     = "Kill the process: Stop-Process -Id $procId -Force`nBlock the port in Windows Firewall > Advanced Settings > Outbound Rules."
                 })
             }
         }
@@ -319,20 +380,25 @@ try {
     if ($schedCmdAvail) {
         $allTasks = Get-ScheduledTask | Where-Object { $_.State -ne 'Disabled' }
         foreach ($t in $allTasks) {
+            $underMS = $t.TaskPath -like '\Microsoft\*'
             foreach ($a in $t.Actions) {
                 if (-not $a.Execute) { continue }
-                $hit     = $ratNames | Where-Object { $a.Execute -like "*$_*" } | Select-Object -First 1
-                $badPath = $a.Execute -like '*\AppData\*' -or $a.Execute -like '*\Temp\*' -or $a.Execute -like '*\Users\Public\*'
-                $rand    = $t.TaskName -match '^[a-f0-9\-]{16,}$'
-                if ($hit -or $badPath -or $rand) {
-                    $sev = if ($hit -or $badPath) { 'HIGH' } else { 'MEDIUM' }
+                $exe   = [Environment]::ExpandEnvironmentVariables($a.Execute)
+                $trust = Get-FileTrust $exe
+                $kw    = $ratKeywords | Where-Object { $a.Execute -like "*$_*" -or $a.Arguments -like "*$_*" } | Select-Object -First 1
+                $bad   = Test-BadPath $a.Execute
+                # Random-name heuristic only for non-Microsoft, non-MS-signed tasks (pure hex)
+                $rand  = (-not $underMS) -and (-not $trust.IsMicrosoft) -and ($t.TaskName -match '^[a-f0-9]{16,}$')
+                if (-not $kw -and $trust.IsMicrosoft) { continue }
+                if ($kw -or $bad -or $rand) {
+                    $sev = if ($kw -or ($bad -and -not $trust.Signed)) { 'HIGH' } else { 'MEDIUM' }
                     $suspTasks.Add([PSCustomObject]@{
                         Name   = $t.TaskName
                         Exe    = $a.Execute
                         Args   = if ($a.Arguments) { $a.Arguments } else { '' }
                         State  = $t.State
                         Sev    = $sev
-                        Reason = if ($hit) { 'Known remote access tool' } elseif ($badPath) { 'Runs from suspicious path' } else { 'Obfuscated/random task name' }
+                        Reason = if ($kw) { "References remote access tool: $kw" } elseif ($bad) { 'Runs from a user-writable path' } else { 'Obfuscated / random task name' }
                         Fix    = "Open Task Scheduler, find '$($t.TaskName)', right-click and choose Disable or Delete.`nOr run: Unregister-ScheduledTask -TaskName '$($t.TaskName)' -Confirm:`$false"
                     })
                 }
@@ -347,18 +413,22 @@ try {
             $status   = $t.'Status'
             if (-not $taskName -or -not $exe) { continue }
             if ($status -eq 'Disabled') { continue }
-            $hit     = $ratNames | Where-Object { $exe -like "*$_*" } | Select-Object -First 1
-            $badPath = $exe -like '*\AppData\*' -or $exe -like '*\Temp\*' -or $exe -like '*\Users\Public\*'
-            $rand    = ($taskName -split '\\')[-1] -match '^[a-f0-9\-]{16,}$'
-            if ($hit -or $badPath -or $rand) {
-                $sev = if ($hit -or $badPath) { 'HIGH' } else { 'MEDIUM' }
+            $underMS = $taskName -like '\Microsoft\*'
+            $trust   = Get-FileTrust $exe
+            $kw      = $ratKeywords | Where-Object { $exe -like "*$_*" } | Select-Object -First 1
+            $bad     = Test-BadPath $exe
+            $leaf    = ($taskName -split '\\')[-1]
+            $rand    = (-not $underMS) -and (-not $trust.IsMicrosoft) -and ($leaf -match '^[a-f0-9]{16,}$')
+            if (-not $kw -and $trust.IsMicrosoft) { continue }
+            if ($kw -or $bad -or $rand) {
+                $sev = if ($kw -or ($bad -and -not $trust.Signed)) { 'HIGH' } else { 'MEDIUM' }
                 $suspTasks.Add([PSCustomObject]@{
                     Name   = $taskName
                     Exe    = $exe
                     Args   = ''
                     State  = $status
                     Sev    = $sev
-                    Reason = if ($hit) { 'Known remote access tool' } elseif ($badPath) { 'Runs from suspicious path' } else { 'Obfuscated/random task name' }
+                    Reason = if ($kw) { "References remote access tool: $kw" } elseif ($bad) { 'Runs from a user-writable path' } else { 'Obfuscated / random task name' }
                     Fix    = "Open Task Scheduler, find '$taskName', right-click and Disable or Delete.`nOr run: schtasks /delete /tn `"$taskName`" /f"
                 })
             }
@@ -386,10 +456,16 @@ foreach ($rp in $regPaths) {
         if (-not $props) { continue }
         foreach ($entry in ($props.PSObject.Properties | Where-Object { $_.Name -notlike 'PS*' })) {
             $val     = [string]$entry.Value
-            $hit     = $ratNames | Where-Object { $val -like "*$_*" } | Select-Object -First 1
+            $hit     = $ratKeywords | Where-Object { $val -like "*$_*" } | Select-Object -First 1
             $badPath = $val -like '*\AppData\*' -or $val -like '*\Temp\*' -or $val -like '*\Users\Public\*'
+            # Resolve the target exe to check its signature (skip Microsoft-signed unless keyword hit)
+            $exeTarget = ''
+            if     ($val -match '"([^"]+\.exe)"') { $exeTarget = $matches[1] }
+            elseif ($val -match '([A-Za-z]:\\[^\s"]+\.exe)') { $exeTarget = $matches[1] }
+            $regTrust = Get-FileTrust ([Environment]::ExpandEnvironmentVariables($exeTarget))
+            if (-not $hit -and $regTrust.IsMicrosoft) { continue }
             if ($hit -or $badPath) {
-                $sev = if ($hit) { 'HIGH' } else { 'MEDIUM' }
+                $sev = if ($hit -or ($badPath -and -not $regTrust.Signed)) { 'HIGH' } else { 'MEDIUM' }
                 $suspReg.Add([PSCustomObject]@{
                     RegPath = $rp
                     Name    = $entry.Name
@@ -635,85 +711,64 @@ try {
 }
 Write-Host "    Found: $($scFindings.Count) ScreenConnect/ConnectWise installation(s)" -ForegroundColor Gray
 
-# ── Scan 9/11: AppData deep scan
+# ── Scan 9: AppData / user-profile executables ───────────────────────────────
+# Scammers hide remote-access tools in AppData. To avoid the false-positive
+# storm a generic "every *.exe in AppData" sweep produces, we ONLY flag an
+# executable when it is a CATALOGUED remote tool, or it is UNSIGNED and its name
+# matches a remote-access keyword. Microsoft-signed and benign apps are ignored.
+Write-Host "  [9/10] Deep-scanning user AppData folders (this is the slow one)..." -ForegroundColor Yellow
 $appDataFindings = New-Object 'System.Collections.Generic.List[object]'
 
-# Known filenames/patterns scammers use to hide ScreenConnect and similar tools in AppData
-$hiddenRatPatterns = @(
-    '*screenconnect*','*connectwise*','*client.exe','*remote*.exe',
-    '*viewer*.exe','*support*.exe','*access*.exe','*control*.exe',
-    'sc*.exe','scservice*.exe','schost*.exe'
-)
-# RAT-related strings to look for in AppData EXE names
-$ratExeHints = @(
-    'teamviewer','anydesk','screenconnect','connectwise','remotepc',
-    'splashtop','rustdesk','radmin','vnc','ammyy','ultraviewer',
-    'supremo','logmein','bomgar','ngrok','chisel','netcat','ncat'
-)
+# Catalog exe base names, for a cheap pre-filter before the costly signature check
+$catalogExe = @{}
+foreach ($t in $RemoteTools) { foreach ($e in $t.Exe) { if ($e) { $catalogExe[$e] = $true } } }
 
 try {
-    # Get all user profiles to scan
-    $userProfiles = @()
-    $userProfiles += $env:LOCALAPPDATA
-    $userProfiles += $env:APPDATA
-    # Also scan other users' AppData if admin
-    $profilesRoot = Split-Path (Split-Path $env:USERPROFILE -Parent) -Parent
-    # e.g. C:\Users
-    $profilesRoot = $env:USERPROFILE | Split-Path -Parent
-    if (Test-Path $profilesRoot) {
-        Get-ChildItem $profilesRoot -Directory -ErrorAction SilentlyContinue | ForEach-Object {
-            $other = Join-Path $_.FullName 'AppData\Local'
-            if (Test-Path $other) { $userProfiles += $other }
-            $other2 = Join-Path $_.FullName 'AppData\Roaming'
-            if (Test-Path $other2) { $userProfiles += $other2 }
+    $userProfiles = New-Object 'System.Collections.Generic.List[string]'
+    $usersRoot = Split-Path $env:USERPROFILE -Parent            # e.g. C:\Users
+    if (Test-Path $usersRoot) {
+        Get-ChildItem $usersRoot -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+            foreach ($sub in @('AppData\Local','AppData\Roaming')) {
+                $p = Join-Path $_.FullName $sub
+                if (Test-Path $p) { $userProfiles.Add($p) }
+            }
         }
     }
-    $userProfiles = $userProfiles | Sort-Object -Unique
 
-    foreach ($adPath in $userProfiles) {
-        if (-not (Test-Path $adPath)) { continue }
-        # Search for executables with suspicious names or in unexpected subdirs
-        Get-ChildItem -Path $adPath -Recurse -Filter '*.exe' -ErrorAction SilentlyContinue | ForEach-Object {
+    foreach ($adPath in ($userProfiles | Sort-Object -Unique)) {
+        Get-ChildItem -Path $adPath -Recurse -Filter '*.exe' -Force -ErrorAction SilentlyContinue | ForEach-Object {
             $exeName = $_.Name.ToLower()
+            $base    = $exeName -replace '\.exe$',''
             $exePath = $_.FullName
 
-            # Skip silently whitelisted items
-            $wl = Get-WhitelistMatch $exeName
-            if (-not $wl) { $wl = Get-WhitelistMatch $exePath }
-            if ($wl) { return }
+            # Cheap pre-filter: only consider catalog exe names or remote keywords
+            $kw       = $ratKeywords | Where-Object { $base -like "*$_*" } | Select-Object -First 1
+            $catalogN = $catalogExe.ContainsKey($base)
+            if (-not $kw -and -not $catalogN) { return }
 
-            # Check if name matches known RAT strings
-            $ratHit = $ratExeHints | Where-Object { $exeName -like "*$_*" } | Select-Object -First 1
+            # Confirm with signature + catalog (expensive, runs only on candidates)
+            $trust = Get-FileTrust $exePath
+            if ($trust.IsMicrosoft) { return }
+            if (Get-WhitelistMatch $exeName) { return }
+            $tool = Find-RemoteTool -Name $exeName -Path $exePath -Signer $trust.SignerName
 
-            # Check for pattern matches (e.g. sc*.exe, *viewer.exe)
-            $patternHit = $hiddenRatPatterns | Where-Object { $exeName -like $_ } | Select-Object -First 1
-
-            # Flag anything in an unexpected deeply-nested AppData subfolder
-            # (legitimate apps live 1-2 levels deep; scammers bury things deeper)
-            $depth = ($exePath -split '\\').Count - ($adPath -split '\\').Count
-            $deepBury = ($depth -ge 5)  # e.g. AppData\Local\Temp\abc\def\ghi\sc.exe
-
-            if ($ratHit -or $patternHit -or $deepBury) {
-                $sev = if ($ratHit) { 'HIGH' } elseif ($patternHit) { 'MEDIUM' } else { 'LOW' }
-                $reason = if ($ratHit) { "Executable name matches known remote access tool: $ratHit" } `
-                          elseif ($patternHit) { "Filename matches suspicious pattern: $patternHit" } `
-                          else { "Executable buried unusually deep in AppData ($depth levels)" }
-
-                # Get file details for context
-                $fv = $null
-                try { $fv = (Get-Item $exePath).VersionInfo } catch {}
-                $company = if ($fv -and $fv.CompanyName) { $fv.CompanyName } else { 'Unknown' }
-                $product = if ($fv -and $fv.ProductName)  { $fv.ProductName  } else { 'Unknown' }
-
-                $appDataFindings.Add([PSCustomObject]@{
-                    Path    = $exePath
-                    Company = $company
-                    Product = $product
-                    Sev     = $sev
-                    Reason  = $reason
-                    Fix     = "Terminate if running: Get-Process | Where-Object { `$_.Path -eq '$exePath' } | Stop-Process -Force`nThen delete: Remove-Item -Path '$exePath' -Force`nIf inside a named folder, delete the whole folder."
-                })
+            if ($tool) {
+                $sev = 'HIGH';   $reason = "Remote access tool in AppData: $($tool.Name) — $($tool.Class)"
+            } elseif (-not $trust.Signed -and $kw) {
+                $sev = 'MEDIUM'; $reason = "Unsigned executable in AppData whose name matches '$kw'"
+            } else {
+                return   # signed, non-Microsoft, keyword-only and not catalogued — too weak to flag
             }
+
+            $signerNote = if ($trust.Signed) { "Signed by: $($trust.SignerName)" } else { 'UNSIGNED' }
+            $appDataFindings.Add([PSCustomObject]@{
+                Path    = $exePath
+                Company = if ($trust.Company) { $trust.Company } else { 'Unknown' }
+                Product = if ($trust.Product) { $trust.Product } else { 'Unknown' }
+                Sev     = $sev
+                Reason  = "$reason. $signerNote."
+                Fix     = "Terminate if running: Get-Process | Where-Object { `$_.Path -eq '$exePath' } | Stop-Process -Force`nThen delete: Remove-Item -Path '$exePath' -Force`nIf inside a named folder, delete the whole folder."
+            })
         }
     }
 } catch {
@@ -726,70 +781,65 @@ Write-Host "  [10/11] Checking users with remote access permissions..." -Foregro
 $remoteUserFindings = New-Object 'System.Collections.Generic.List[object]'
 
 try {
-    # Get members of Remote Desktop Users group
-    $rdpGroupOutput = & net localgroup "Remote Desktop Users" 2>$null
-    $rdpUsers = @()
-    $inMembers = $false
-    foreach ($line in $rdpGroupOutput) {
-        if ($line -match '^-{5,}') { $inMembers = $true; continue }
-        if ($inMembers -and $line.Trim() -ne '' -and $line -notmatch 'The command completed') {
-            $rdpUsers += $line.Trim()
+    # Resolve group membership by well-known SID so localized group names and
+    # localized "net user" output never break parsing.
+    function Get-GroupMemberNames([string]$sid) {
+        $names = @()
+        if ($null -ne (Get-Command Get-LocalGroupMember -ErrorAction SilentlyContinue)) {
+            try {
+                Get-LocalGroupMember -SID $sid -ErrorAction Stop | ForEach-Object {
+                    $names += ($_.Name -replace '^.*\\','')   # strip COMPUTER\ or DOMAIN\ prefix
+                }
+                return $names
+            } catch {}
         }
-    }
-
-    # Get all local user accounts
-    $allUsersOutput = & net user 2>$null
-    $allUsers = @()
-    $inUserList = $false
-    foreach ($line in $allUsersOutput) {
-        if ($line -match '^-{5,}') { $inUserList = $true; continue }
-        if ($inUserList -and $line -notmatch 'The command completed' -and $line.Trim() -ne '') {
-            # net user output has 3 names per line separated by spaces
-            $line.Trim() -split '\s{2,}' | ForEach-Object {
-                if ($_.Trim() -ne '') { $allUsers += $_.Trim() }
+        # CIM fallback — also resolves the group by SID, locale-independent
+        try {
+            $grp = Get-CimInstance Win32_Group -Filter "SID='$sid'" -ErrorAction Stop
+            if ($grp) {
+                Get-CimInstance -Query "ASSOCIATORS OF {Win32_Group.Domain='$($grp.Domain)',Name='$($grp.Name)'} WHERE ResultClass=Win32_Account" -ErrorAction SilentlyContinue |
+                    ForEach-Object { $names += $_.Name }
             }
-        }
+        } catch {}
+        return $names
     }
 
-    # Get administrators
-    $adminGroupOutput = & net localgroup "Administrators" 2>$null
-    $adminUsers = @()
-    $inAdmins = $false
-    foreach ($line in $adminGroupOutput) {
-        if ($line -match '^-{5,}') { $inAdmins = $true; continue }
-        if ($inAdmins -and $line.Trim() -ne '' -and $line -notmatch 'The command completed') {
-            $adminUsers += $line.Trim()
-        }
+    $adminUsers = Get-GroupMemberNames 'S-1-5-32-544'   # Administrators
+    $rdpUsers   = Get-GroupMemberNames 'S-1-5-32-555'   # Remote Desktop Users
+
+    # Enumerate local users
+    if ($null -ne (Get-Command Get-LocalUser -ErrorAction SilentlyContinue)) {
+        $localUsers = Get-LocalUser -ErrorAction SilentlyContinue
+    } else {
+        $localUsers = Get-CimInstance Win32_UserAccount -Filter 'LocalAccount=true' -ErrorAction SilentlyContinue |
+                      Select-Object Name, @{N='Enabled';E={ -not $_.Disabled }}
     }
 
-    # Build per-user findings
-    foreach ($u in $allUsers) {
-        if (-not $u -or $u -eq '') { continue }
-        $isRdp   = $rdpUsers  -contains $u
+    foreach ($usr in $localUsers) {
+        $u = $usr.Name
+        if (-not $u) { continue }
+        $isRdp   = $rdpUsers   -contains $u
         $isAdmin = $adminUsers -contains $u
+        if (-not ($isRdp -or $isAdmin)) { continue }
 
-        # Get account details
-        $userDetail = & net user $u 2>$null
-        $isActive   = ($userDetail | Where-Object { $_ -match 'Account active' }) -match 'Yes'
-        $lastLogon  = ($userDetail | Where-Object { $_ -match 'Last logon' }) -replace '.*Last logon\s+',''
-        $pwExpires  = ($userDetail | Where-Object { $_ -match 'Password expires' }) -replace '.*Password expires\s+',''
+        $accessType = @()
+        if ($isAdmin) { $accessType += 'Local Administrator' }
+        if ($isRdp)   { $accessType += 'Remote Desktop (RDP)' }
+        $sev = if ($isAdmin -and $isRdp) { 'HIGH' } elseif ($isAdmin) { 'MEDIUM' } else { 'LOW' }
 
-        if ($isRdp -or $isAdmin) {
-            $accessType = @()
-            if ($isAdmin) { $accessType += 'Local Administrator' }
-            if ($isRdp)   { $accessType += 'Remote Desktop (RDP)' }
-            $sev = if ($isAdmin -and $isRdp) { 'HIGH' } elseif ($isAdmin) { 'MEDIUM' } else { 'LOW' }
+        $active = if ($null -ne $usr.Enabled) { if ($usr.Enabled) { 'Yes' } else { 'No' } } else { 'Unknown' }
+        $last   = if ($usr.PSObject.Properties['LastLogon'] -and $usr.LastLogon) { [string]$usr.LastLogon } else { 'Never / Unknown' }
+        $pw     = if ($usr.PSObject.Properties['PasswordExpires']) { if ($usr.PasswordExpires) { [string]$usr.PasswordExpires } else { 'Never' } } else { 'N/A' }
 
-            $remoteUserFindings.Add([PSCustomObject]@{
-                Username   = $u
-                Access     = $accessType -join ', '
-                Active     = if ($isActive) { 'Yes' } else { 'No' }
-                LastLogon  = if ($lastLogon.Trim()) { $lastLogon.Trim() } else { 'Never / Unknown' }
-                PwExpires  = if ($pwExpires.Trim()) { $pwExpires.Trim() } else { 'Never' }
-                Sev        = $sev
-                Fix        = "To remove from Remote Desktop Users:`nnet localgroup `"Remote Desktop Users`" `"$u`" /delete`n`nTo disable account:`nnet user `"$u`" /active:no`n`nTo remove admin rights:`nnet localgroup Administrators `"$u`" /delete"
-            })
-        }
+        $remoteUserFindings.Add([PSCustomObject]@{
+            Username   = $u
+            Access     = $accessType -join ', '
+            Active     = $active
+            LastLogon  = $last
+            PwExpires  = $pw
+            Sev        = $sev
+            Fix        = "To remove from Remote Desktop Users:`nnet localgroup `"Remote Desktop Users`" `"$u`" /delete`n`nTo disable account:`nnet user `"$u`" /active:no`n`nTo remove admin rights:`nnet localgroup Administrators `"$u`" /delete"
+        })
     }
 } catch {
     Write-Host "    Remote user scan error: $_" -ForegroundColor Red
@@ -853,6 +903,10 @@ try {
             $isTrusted = $trustedProcesses | Where-Object { $pname -like "*$_*" } | Select-Object -First 1
             if ($isTrusted) { continue }
 
+            # Skip Microsoft-signed binaries — legitimate Windows components
+            $ptrust = Get-FileTrust $ppath
+            if ($ptrust.IsMicrosoft) { continue }
+
             # Filter to only external IPs
             $extConns = $conns | Where-Object { -not (Is-TrustedIP $_.RemoteAddress) }
             if ($extConns.Count -eq 0) { continue }
@@ -876,6 +930,11 @@ try {
                 $_.RemotePort -gt 1024
             }
             $hasWeirdPorts = $weirdPortConns.Count -gt 0
+
+            # For validly signed (non-Microsoft) apps, only a bad image path is
+            # noteworthy — high connection counts and odd ports are normal for
+            # many legitimate signed apps and would otherwise be false positives.
+            if ($ptrust.Signed) { $manyConns = $false; $hasWeirdPorts = $false }
 
             if ($suspPath -or $manyConns -or $hasWeirdPorts) {
                 $remotes = ($extConns | Select-Object -First 5 | ForEach-Object { "$($_.RemoteAddress):$($_.RemotePort)" }) -join ', '
@@ -1742,12 +1801,12 @@ foreach ($path in $tryPaths) {
     }
 }
 
-# HTML report is backup only — main interface was the GUI window above.
-# Uncomment the next line if you want the HTML to auto-open after closing the window:
-# if ($saved) { Start-Process $savedPath }
+# The GUI window above is the main interface; the HTML is the saved record.
+# Open it automatically once the window is closed so the tech can review/print it.
+if ($saved) { Start-Process $savedPath }
 
 Write-Host ""
 Write-Host "  Session complete. Findings: $total  Risk: $risk" -ForegroundColor Cyan
+if ($saved) { Write-Host "  Report saved to: $savedPath" -ForegroundColor Gray }
 Write-Host ""
 
-::PSEND
