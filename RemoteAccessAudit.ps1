@@ -563,20 +563,31 @@ foreach ($rp in $regPaths) {
             $val     = [string]$entry.Value
             $hit     = $ratKeywords | Where-Object { $val -like "*$_*" } | Select-Object -First 1
             $badPath = $val -like '*\AppData\*' -or $val -like '*\Temp\*' -or $val -like '*\Users\Public\*'
-            # Resolve the target exe to check its signature (skip Microsoft-signed unless keyword hit)
+            # Resolve the target exe so we can check its signature
             $exeTarget = ''
-            if     ($val -match '"([^"]+\.exe)"') { $exeTarget = $matches[1] }
+            if     ($val -match '"([^"]+\.exe)"')            { $exeTarget = $matches[1] }
             elseif ($val -match '([A-Za-z]:\\[^\s"]+\.exe)') { $exeTarget = $matches[1] }
+            elseif ($val -match '(%[^%]+%\\[^\s"]+\.exe)')   { $exeTarget = $matches[1] }
             $regTrust = Get-FileTrust ([Environment]::ExpandEnvironmentVariables($exeTarget))
-            if (-not $hit -and $regTrust.IsMicrosoft) { continue }
+
+            # Unless it references a known remote tool, trust normal autostart entries:
+            # Microsoft-signed, benign apps by name (Teams/OneDrive/Slack/...), or any
+            # validly-signed publisher. Only an UNSIGNED program auto-starting from a
+            # user-writable path is suspicious.
+            if (-not $hit) {
+                if ($regTrust.IsMicrosoft)        { continue }
+                if (Get-WhitelistMatch $val)      { continue }
+                if ($regTrust.Signed)             { continue }
+                if (-not $badPath)                { continue }
+            }
             if ($hit -or $badPath) {
-                $sev = if ($hit -or ($badPath -and -not $regTrust.Signed)) { 'HIGH' } else { 'MEDIUM' }
+                $sev = if ($hit) { 'HIGH' } else { 'MEDIUM' }
                 $suspReg.Add([PSCustomObject]@{
                     RegPath = $rp
                     Name    = $entry.Name
                     Value   = $val
                     Sev     = $sev
-                    Reason  = if ($hit) { "References known remote access tool: $hit" } else { 'Points to suspicious file path' }
+                    Reason  = if ($hit) { "References known remote access tool: $hit" } else { 'Unsigned program auto-starting from a user-writable path (AppData/Temp/Public)' }
                     Fix     = "Open regedit.exe, navigate to:`n$rp`nFind the entry '$($entry.Name)' and delete it.`nOr run: Remove-ItemProperty -Path '$rp' -Name '$($entry.Name)'"
                 })
             }
@@ -942,7 +953,9 @@ try {
         $accessType = @()
         if ($isAdmin) { $accessType += 'Local Administrator' }
         if ($isRdp)   { $accessType += 'Remote Desktop (RDP)' }
-        $sev = if ($isAdmin -and $isRdp) { 'HIGH' } elseif ($isAdmin) { 'MEDIUM' } else { 'LOW' }
+        # Informational only — every PC has a primary admin account, so this is not a
+        # risk by itself. Listed so a tech can spot an account they do not recognize.
+        $sev = 'LOW'
 
         $active = if ($null -ne $usr.Enabled) { if ($usr.Enabled) { 'Yes' } else { 'No' } } else { 'Unknown' }
         $last   = if ($usr.PSObject.Properties['LastLogon'] -and $usr.LastLogon) { [string]$usr.LastLogon } else { 'Never / Unknown' }
@@ -1010,6 +1023,14 @@ try {
             $proc  = ($allProcs | Where-Object { $_.Id -eq $pid2 } | Select-Object -First 1)
             $pname = if ($proc) { $proc.Name } else { 'Unknown' }
             $ppath = if ($proc) { $proc.Path } else { '' }
+            # Fallback: resolve the owning process name/path via WMI when Get-Process missed it
+            if (($pname -eq 'Unknown' -or -not $ppath) -and "$pid2" -match '^\d+$') {
+                $wp = Get-CimInstance Win32_Process -Filter "ProcessId=$pid2" -ErrorAction SilentlyContinue
+                if ($wp) {
+                    if ($pname -eq 'Unknown' -and $wp.Name) { $pname = ($wp.Name -replace '\.exe$','') }
+                    if (-not $ppath -and $wp.ExecutablePath) { $ppath = $wp.ExecutablePath }
+                }
+            }
 
             # Skip silently whitelisted processes
             $wl = Get-WhitelistMatch $pname
@@ -1054,25 +1075,33 @@ try {
             if ($ptrust.Signed) { $manyConns = $false; $hasWeirdPorts = $false }
 
             if ($suspPath -or $manyConns -or $hasWeirdPorts) {
-                $remotes = ($extConns | Select-Object -First 5 | ForEach-Object { "$($_.RemoteAddress):$($_.RemotePort)" }) -join ', '
-                if ($extConns.Count -gt 5) { $remotes += " (+$($extConns.Count - 5) more)" }
+                # Detailed, de-duplicated remote list, annotating any known remote/C2 ports
+                $remoteList = $extConns | ForEach-Object {
+                    $rnote = $ratPorts[[int]$_.RemotePort]
+                    if ($rnote) { "$($_.RemoteAddress):$($_.RemotePort) [$rnote]" } else { "$($_.RemoteAddress):$($_.RemotePort)" }
+                } | Select-Object -Unique
+                $shown   = @($remoteList | Select-Object -First 8)
+                $remotes = $shown -join ', '
+                if ($remoteList.Count -gt 8) { $remotes += " (+$($remoteList.Count - 8) more)" }
 
                 $reasons = @()
-                if ($suspPath)     { $reasons += "Process runs from suspicious path (AppData/Temp)" }
+                if ($suspPath)     { $reasons += "Process runs from a user-writable path (AppData/Temp/Public)" }
                 if ($manyConns)    { $reasons += "$($extConns.Count) simultaneous external connections (possible beaconing/exfil)" }
                 if ($hasWeirdPorts){ $reasons += "Connecting to unusual high ports: $(($weirdPortConns | Select-Object -Unique -ExpandProperty RemotePort | Select-Object -First 5) -join ', ')" }
 
                 $sev = if ($suspPath -and $manyConns) { 'HIGH' } elseif ($suspPath -or $manyConns) { 'MEDIUM' } else { 'LOW' }
+                $signer = if ($ptrust.Signed) { $ptrust.SignerName } else { 'UNSIGNED' }
 
                 $suspTraffic.Add([PSCustomObject]@{
-                    Process = $pname
-                    PID     = $pid2
-                    Path    = if ($ppath) { $ppath } else { 'N/A' }
+                    Process  = $pname
+                    PID      = $pid2
+                    Path     = if ($ppath) { $ppath } else { 'N/A (could not resolve image path)' }
+                    Signer   = $signer
                     ExtConns = $extConns.Count
-                    Remotes = $remotes
-                    Sev     = $sev
-                    Reason  = $reasons -join '; '
-                    Fix     = "Investigate the process path above.`nKill if suspicious: Stop-Process -Id $pid2 -Force`nTo trace what it's sending, run Wireshark or:`nnetstat -b -n -o | findstr `"$pid2`"`nOr use TCPView (Sysinternals) to watch live connections."
+                    Remotes  = $remotes
+                    Sev      = $sev
+                    Reason   = $reasons -join '; '
+                    Fix      = "This traffic is coming from: $pname (PID $pid2)`nImage: $(if($ppath){$ppath}else{'unknown'})`nKill if suspicious: Stop-Process -Id $pid2 -Force`nSee live per-process connections: Get-NetTCPConnection -OwningProcess $pid2`nOr use TCPView (Sysinternals)."
                 })
             }
         }
@@ -1143,11 +1172,12 @@ foreach ($s in $suspSvcs) {
     })
 }
 foreach ($c in $suspConns) {
+    $cpath = ($allProcs | Where-Object { $_.Id -eq $c.PID } | Select-Object -First 1).Path
     $guiFindings.Add([PSCustomObject]@{
         Category   = 'Network'
         Sev        = $c.Sev
-        Title      = "$($c.Process) → $($c.Remote) [$($c.Note)]"
-        Detail     = "State: $($c.State)"
+        Title      = "$($c.Process)  (PID $($c.PID))  →  $($c.Remote)"
+        Detail     = "From process: $($c.Process)  (PID $($c.PID))`nImage path: $(if($cpath){$cpath}else{'unknown'})`nLocal: $($c.Local)`nRemote: $($c.Remote)  [$($c.Note)]`nState: $($c.State)"
         FixScript  = $c.Fix
         FixLabel   = 'Kill & Block'
     })
@@ -1217,8 +1247,8 @@ foreach ($tr in $suspTraffic) {
     $guiFindings.Add([PSCustomObject]@{
         Category   = 'Traffic'
         Sev        = $tr.Sev
-        Title      = "$($tr.Process) — $($tr.ExtConns) external connections"
-        Detail     = "$($tr.Reason)`nRemotes: $($tr.Remotes)"
+        Title      = "$($tr.Process)  (PID $($tr.PID))  —  $($tr.ExtConns) external connection$(if($tr.ExtConns -ne 1){'s'})"
+        Detail     = "From process: $($tr.Process)  (PID $($tr.PID))`nImage path: $($tr.Path)`nSigner: $($tr.Signer)`nWhy flagged: $($tr.Reason)`nConnecting to: $($tr.Remotes)"
         FixScript  = $tr.Fix
         FixLabel   = 'Kill Process'
     })
@@ -1809,12 +1839,12 @@ $null = $sb.AppendLine('<div class="card">')
 $null = $sb.AppendLine('<h2>&#x1F465; Users With Remote Access Permissions')
 $userCount = $remoteUserFindings.Count
 $userBadge = if ($userCount -gt 0) {
-    "<span style='background:#ea580c;color:#fff;padding:1px 10px;border-radius:12px;font-size:12px;margin-left:8px'>$userCount accounts</span>"
+    "<span style='background:#2563eb;color:#fff;padding:1px 10px;border-radius:12px;font-size:12px;margin-left:8px'>$userCount accounts (info)</span>"
 } else {
     "<span style='background:#16a34a;color:#fff;padding:1px 10px;border-radius:12px;font-size:12px;margin-left:8px'>Clean</span>"
 }
 $null = $sb.AppendLine("$userBadge</h2>")
-$null = $sb.AppendLine('<p class="intro">All local user accounts that have Remote Desktop (RDP) access or local Administrator rights. Review for any unrecognized accounts. Administrators can always log in remotely if RDP is enabled.</p>')
+$null = $sb.AppendLine('<p class="intro"><strong>Informational, not a risk.</strong> Every PC has at least one administrator account, so this list is normal. It is shown only so you can scan it for an account you do not recognize (a name you did not create). Accounts here are not counted toward the risk level.</p>')
 if ($remoteUserFindings.Count -gt 0) {
     $null = $sb.AppendLine('<div class="tbl-wrap"><table>')
     $null = $sb.AppendLine('<tr><th>Username</th><th>Access Type</th><th>Account Active</th><th>Last Logon</th><th>Password Expires</th><th>Severity</th><th>How to Remove/Restrict</th></tr>')
