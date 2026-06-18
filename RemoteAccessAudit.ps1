@@ -280,6 +280,24 @@ function Test-BadPath([string]$Path) {
     return ($Path -like '*\AppData\*' -or $Path -like '*\Temp\*' -or $Path -like '*\Users\Public\*')
 }
 
+# Well-known vendor directories — used to suppress the weak "unsigned exe buried
+# deep in AppData" signal for mainstream apps (Teams, browsers, Electron apps,
+# etc. all drop unsigned helper exes deep in their own folders). Catalogued tools
+# and keyword matches are NOT affected by this — only the depth-only heuristic.
+$benignVendorDirs = @(
+    '\microsoft\','\windowsapps\','\google\','\mozilla\','\adobe\','\discord\',
+    '\slack\','\spotify\','\zoom\','\webex\','\steam\','\epic games\','\jetbrains\',
+    '\github\','\githubdesktop\','\postman\','\1password\','\dropbox\','\box\',
+    '\nvidia\','\intel\','\amd\','\logi','\citrix\','\python','\nodejs\','\valve\',
+    '\obs-studio\','\zoomus\','\whatsapp\','\signal\','\telegram desktop\'
+)
+function Test-TrustedVendorPath([string]$Path) {
+    if (-not $Path) { return $false }
+    $p = $Path.ToLower()
+    foreach ($d in $benignVendorDirs) { if ($p -like "*$d*") { return $true } }
+    return $false
+}
+
 # ── Helper functions ──────────────────────────────────────────────────────────
 function Esc([string]$s) {
     if (-not $s) { return '' }
@@ -846,13 +864,14 @@ try {
             $trust = Get-FileTrust $exePath
             if ($trust.IsMicrosoft) { return }
             if (Get-WhitelistMatch $exeName) { return }
+            if (Get-WhitelistMatch $exePath) { return }   # e.g. ...\Microsoft\Teams\..., ...\OneDrive\...
             $tool = Find-RemoteTool -Exe $exeName -Path $exePath -Signer $trust.SignerName
 
             if ($tool) {
                 $sev = 'HIGH';   $reason = "Remote access tool in AppData: $($tool.Name) — $($tool.Class)"
             } elseif (-not $trust.Signed -and $kw) {
                 $sev = 'MEDIUM'; $reason = "Unsigned executable in AppData whose name matches '$kw'"
-            } elseif (-not $trust.Signed -and $deep) {
+            } elseif (-not $trust.Signed -and $deep -and -not (Test-TrustedVendorPath $exePath)) {
                 $sev = 'LOW';    $reason = "Unsigned executable buried $depth folders deep in AppData — a common hiding spot for ScreenConnect and similar tools"
             } else {
                 return   # signed (non-Microsoft) without a catalog/keyword hit — too weak to flag
@@ -1845,28 +1864,6 @@ net localgroup 'Remote Desktop Users'"
     $null = $sb.AppendLine("<div class='fix-box' style='margin-top:12px'>$(Esc $rdpFix)</div>")
 }
 $null = $sb.AppendLine('</div>')
-
-# Recommendations
-$null = $sb.AppendLine('<div class="card">')
-$null = $sb.AppendLine('<h2>&#x1F4A1; What To Do Next</h2>')
-$null = $sb.AppendLine('<p class="intro">Follow these steps regardless of what was found above. Good security practice for any PC.</p>')
-$null = $sb.AppendLine('<table>')
-$null = $sb.AppendLine('<tr><th style="width:36px">#</th><th style="width:220px">Action</th><th>Instructions</th></tr>')
-
-$recs = @(
-    @{N='1'; T='Run Malwarebytes';           D='Download from malwarebytes.com and run a Full Scan. It automatically detects and removes known RATs, spyware, and trojans with no technical knowledge needed.'},
-    @{N='2'; T='Run Autoruns (Sysinternals)'; D='Download from: learn.microsoft.com/sysinternals/downloads/autoruns — It shows everything that auto-starts on the PC. Look for yellow-highlighted entries or anything pointing to AppData or Temp folders.'},
-    @{N='3'; T='Check all user accounts';     D='Open Command Prompt as Admin and run: net user — this lists all accounts. Also run: net localgroup Administrators — to see who has admin rights. Remove any accounts you do not recognize.'},
-    @{N='4'; T='Check active sessions';       D='Run: query session or query user — this shows everyone currently logged in, including remote sessions. Disconnect any sessions you do not recognize.'},
-    @{N='5'; T='Review recent logins';        D='Open PowerShell as Admin and run: Get-EventLog -LogName Security -InstanceId 4624 -Newest 50 | Select TimeGenerated,Message — shows the last 50 successful logins with timestamps and source.'},
-    @{N='6'; T='Disable WinRM if unused';     D='WinRM allows remote PowerShell access. Disable it unless you specifically need it. Run: Disable-PSRemoting -Force then: Set-Service WinRM -StartupType Disabled'},
-    @{N='7'; T='Monitor live connections';    D='Download TCPView from Sysinternals (learn.microsoft.com/sysinternals/downloads/tcpview). It shows every network connection in real time with process names. Watch for anything connecting out that you do not recognize.'},
-    @{N='8'; T='If a RAT is confirmed';       D='1) Disconnect the PC from the internet immediately. 2) Change ALL passwords from a separate clean device. 3) Contact your IT person. 4) Consider a full clean reinstall of Windows for complete certainty.'}
-)
-foreach ($r in $recs) {
-    $null = $sb.AppendLine("<tr><td style='text-align:center;font-weight:700'>$($r.N)</td><td style='font-weight:600'>$($r.T)</td><td>$($r.D)</td></tr>")
-}
-$null = $sb.AppendLine('</table></div>')
 
 # Footer
 $null = $sb.AppendLine("<div class='footer'>Remote Access Audit &bull; $(Get-Date -Format 'MMMM dd, yyyy HH:mm') &bull; $env:COMPUTERNAME</div>")
