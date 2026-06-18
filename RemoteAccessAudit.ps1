@@ -3,7 +3,11 @@
 # ------------------------------------------------------------
 #  Run it (paste into Windows PowerShell — normal OR admin):
 #
-#    irm -Headers @{Accept='application/vnd.github.raw'} https://api.github.com/repos/nerd-industries/Remote-Access-Audit/contents/RemoteAccessAudit.ps1 | iex
+#    irm audit.nerdyneighbor.net | iex
+#
+#  (audit.nerdyneighbor.net is a Cloudflare proxy that returns this exact file,
+#   latest commit, via the GitHub API. Direct fallback if the proxy is down:
+#   irm -Headers @{Accept='application/vnd.github.raw'} https://api.github.com/repos/nerd-industries/Remote-Access-Audit/contents/RemoteAccessAudit.ps1 | iex )
 #
 #  - Pulls the latest committed version every time (GitHub API,
 #    not the cached raw CDN) so you never run a stale copy.
@@ -712,10 +716,16 @@ try {
 Write-Host "    Found: $($scFindings.Count) ScreenConnect/ConnectWise installation(s)" -ForegroundColor Gray
 
 # ── Scan 9: AppData / user-profile executables ───────────────────────────────
-# Scammers hide remote-access tools in AppData. To avoid the false-positive
-# storm a generic "every *.exe in AppData" sweep produces, we ONLY flag an
-# executable when it is a CATALOGUED remote tool, or it is UNSIGNED and its name
-# matches a remote-access keyword. Microsoft-signed and benign apps are ignored.
+# Scammers hide remote-access tools deep in AppData (ScreenConnect in particular
+# gets buried many sub-folders down, e.g. ClickOnce-style \Apps\2.0\<hash>\... ).
+# A generic "flag every exe that's deep" rule produces a false-positive storm
+# because legitimate apps (browsers, Electron apps) also bury signed exes. So we
+# flag, at ANY depth:
+#   • catalogued remote tools (by exe name / install path / signer)        -> HIGH
+#   • UNSIGNED exes whose name matches a remote-access keyword              -> MEDIUM
+#   • UNSIGNED exes buried deep in AppData (legit deep exes are signed)     -> LOW
+# Microsoft-signed and benign signed apps are always ignored. The scan recurses
+# the full tree, so a buried ScreenConnect is found no matter how deep it sits.
 Write-Host "  [9/10] Deep-scanning user AppData folders (this is the slow one)..." -ForegroundColor Yellow
 $appDataFindings = New-Object 'System.Collections.Generic.List[object]'
 
@@ -736,15 +746,18 @@ try {
     }
 
     foreach ($adPath in ($userProfiles | Sort-Object -Unique)) {
+        $rootDepth = ($adPath -split '\\').Count
         Get-ChildItem -Path $adPath -Recurse -Filter '*.exe' -Force -ErrorAction SilentlyContinue | ForEach-Object {
             $exeName = $_.Name.ToLower()
             $base    = $exeName -replace '\.exe$',''
             $exePath = $_.FullName
 
-            # Cheap pre-filter: only consider catalog exe names or remote keywords
+            # Cheap pre-filter: catalog exe names, remote keywords, or deeply buried exes
             $kw       = $ratKeywords | Where-Object { $base -like "*$_*" } | Select-Object -First 1
             $catalogN = $catalogExe.ContainsKey($base)
-            if (-not $kw -and -not $catalogN) { return }
+            $depth    = ($exePath -split '\\').Count - $rootDepth
+            $deep     = $depth -ge 5     # buried many sub-folders below AppData\Local|Roaming
+            if (-not $kw -and -not $catalogN -and -not $deep) { return }
 
             # Confirm with signature + catalog (expensive, runs only on candidates)
             $trust = Get-FileTrust $exePath
@@ -756,8 +769,10 @@ try {
                 $sev = 'HIGH';   $reason = "Remote access tool in AppData: $($tool.Name) — $($tool.Class)"
             } elseif (-not $trust.Signed -and $kw) {
                 $sev = 'MEDIUM'; $reason = "Unsigned executable in AppData whose name matches '$kw'"
+            } elseif (-not $trust.Signed -and $deep) {
+                $sev = 'LOW';    $reason = "Unsigned executable buried $depth folders deep in AppData — a common hiding spot for ScreenConnect and similar tools"
             } else {
-                return   # signed, non-Microsoft, keyword-only and not catalogued — too weak to flag
+                return   # signed (non-Microsoft) without a catalog/keyword hit — too weak to flag
             }
 
             $signerNote = if ($trust.Signed) { "Signed by: $($trust.SignerName)" } else { 'UNSIGNED' }

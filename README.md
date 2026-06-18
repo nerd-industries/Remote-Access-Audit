@@ -10,8 +10,13 @@ and saves an HTML report.
 On the customer's PC, open **Windows PowerShell** (normal or admin) and paste:
 
 ```powershell
-irm -Headers @{Accept='application/vnd.github.raw'} https://api.github.com/repos/nerd-industries/Remote-Access-Audit/contents/RemoteAccessAudit.ps1 | iex
+irm audit.nerdyneighbor.net | iex
 ```
+
+> Direct fallback if the proxy is ever down:
+> ```powershell
+> irm -Headers @{Accept='application/vnd.github.raw'} https://api.github.com/repos/nerd-industries/Remote-Access-Audit/contents/RemoteAccessAudit.ps1 | iex
+> ```
 
 That's it. The script will:
 
@@ -54,6 +59,29 @@ That's it. The script will:
   (so `mailbox.exe`, `toolbox.exe`, `sandboxie.exe`, etc. are no longer flagged).
 - **No broad globs / no "buried in AppData" heuristic** — the AppData scan only
   surfaces catalogued tools or unsigned binaries with remote-access names.
+
+## Hosting (`audit.nerdyneighbor.net`)
+
+`audit.nerdyneighbor.net` is a **Cloudflare Pages** project. The page itself has
+no static content to speak of — it's a single **Pages Function**
+(`functions/index.js`) that, on every request, calls the GitHub Contents API
+with `Accept: application/vnd.github.raw` and returns the raw script. That means:
+
+- `irm audit.nerdyneighbor.net | iex` always runs the **latest commit** (the API
+  is not CDN-cached like `raw.githubusercontent.com`).
+- Opening the URL in a browser shows usage instructions instead of raw script.
+- The repo is connected to Pages via Git, so **pushing to `main` redeploys the
+  function automatically**. The *script* is always current regardless of deploys.
+
+### Optional: lift the GitHub rate limit
+Unauthenticated GitHub API calls are limited to 60/hour per IP. Since the proxy
+calls GitHub from Cloudflare's network, set a read-only token to get 5,000/hour:
+
+1. Create a GitHub token (classic, no scopes needed for a public repo — just
+   "public access"; or a fine-grained token with **Contents: Read** on this repo).
+2. In the Cloudflare dashboard: **Pages → nerdyneighbor-audit → Settings →
+   Environment variables → Production**, add `GITHUB_TOKEN` = the token, and
+   redeploy. The function picks it up automatically.
 
 ## Notes
 
