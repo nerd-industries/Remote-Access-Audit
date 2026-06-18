@@ -97,6 +97,60 @@ $RemoteTools = @(
     @{ Name='Cloudflared (tunnel)';         Exe=@('cloudflared'); Svc=@('cloudflared*'); Path=@('*\cloudflared*'); Signer=@('cloudflare'); Class='Tunneling tool (used to expose remote access)' }
     @{ Name='Chisel (tunnel)';              Exe=@('chisel'); Svc=@(); Path=@('*\chisel*'); Signer=@(); Class='Tunneling tool (used to expose remote access)' }
     @{ Name='Netcat / Ncat';                Exe=@('ncat','netcat'); Svc=@(); Path=@(); Signer=@(); Class='Reverse-shell tool' }
+
+    # ── Additional RMM / remote-support tools (commonly abused — see lolrmm.io, CISA AA23-025A) ──
+    @{ Name='SimpleHelp';                   Exe=@('simplehelpcustomer','simpleservice','simplegatewayservice','remote access'); Svc=@('simplehelp*','simpleservice*'); Path=@('*\simplehelp*','*\simple-help*'); Signer=@('simple-help','jwsoftware'); Class='Remote support (abused in 2025-26 ransomware intrusions)' }
+    @{ Name='ITarian / Comodo RMM';         Exe=@('itsmagent','itsmservice','rviewer'); Svc=@('itsm*'); Path=@('*\itarian*','*\comodo\*rmm*'); Signer=@('itarian'); Class='RMM agent (abused)' }
+    @{ Name='PDQ Connect / Deploy';         Exe=@('pdq-connect-agent','pdqconnectagent','pdqdeployrunner','pdqinventory'); Svc=@('pdq*'); Path=@('*\pdq*'); Signer=@('pdq'); Class='RMM / software deployment (abused)' }
+    @{ Name='N-able Take Control / N-central'; Exe=@('basupsrvc','basupsrvcupdater','basuptshelper'); Svc=@('basupsrvc*','windows agent*','n-central*'); Path=@('*\n-able*','*\solarwinds*msp*','*\take control*','*\beanywhere*'); Signer=@('n-able','solarwinds'); Class='RMM / remote support (abused)' }
+    @{ Name='Datto RMM (CentraStage)';      Exe=@('cagservice','aurora-agent','aurora-agent-v2'); Svc=@('cagservice*','datto*'); Path=@('*\centrastage*','*\datto*'); Signer=@('datto','centrastage','kaseya'); Class='RMM agent (abused)' }
+    @{ Name='Syncro / Kabuto';              Exe=@('syncro.service','syncro','kabuto.app.service','kabuto'); Svc=@('syncro*','kabuto*'); Path=@('*\syncro*','*\repairtech*','*\kabuto*'); Signer=@('syncromsp','servably','repairtech'); Class='RMM agent (abused)' }
+    @{ Name='Action1';                      Exe=@('action1_agent','action1_remote','action1'); Svc=@('action1*'); Path=@('*\action1*'); Signer=@('action1'); Class='RMM agent (abused)' }
+    @{ Name='Level.io';                     Exe=@('level-windows-amd64','level-remote-control-ws','levelrmm'); Svc=@('level*'); Path=@('*\level.io*','*\level\agent*'); Signer=@('level'); Class='RMM agent (abused)' }
+    @{ Name='Tactical RMM';                 Exe=@('tacticalrmm','tacticalagent','trmm'); Svc=@('tacticalrmm*'); Path=@('*\tacticalagent*','*\tacticalrmm*'); Signer=@('amidaware'); Class='RMM agent (open-source, abused)' }
+    @{ Name='MeshCentral / MeshAgent';      Exe=@('meshagent'); Svc=@('mesh agent*','meshagent*'); Path=@('*\meshagent*','*\meshcentral*'); Signer=@('meshcentral'); Class='Remote management (open-source, abused)' }
+    @{ Name='ManageEngine Endpoint Central';Exe=@('dcagentservice','dcagenttrayicon','dcfilelogservice'); Svc=@('manageengine*','dcagent*'); Path=@('*\manageengine*','*\desktopcentral*','*\endpoint central*'); Signer=@('zoho'); Class='RMM / endpoint mgmt (abused)' }
+    @{ Name='ImmyBot';                      Exe=@('immyagent','immyupdater'); Svc=@('immy*'); Path=@('*\immybot*'); Signer=@('immense','immybot'); Class='RMM agent' }
+    @{ Name='Goverlan Reach';               Exe=@('goverrmc','goverlanreach','grcagentservice'); Svc=@('grcagent*','goverlan*'); Path=@('*\goverlan*'); Signer=@('pj technologies','goverlan'); Class='Remote administration (abused)' }
+    @{ Name='ISL Online / ISL Light';       Exe=@('isllight','isllightclient','islalwaysonmonitor','isllightservice'); Svc=@('isl*'); Path=@('*\isl online*','*\isllight*'); Signer=@('xlab','isl online'); Class='Remote support (abused)' }
+    @{ Name='Parsec';                       Exe=@('parsecd','parsec'); Svc=@('parsec*'); Path=@('*\parsec*'); Signer=@('parsec'); Class='Remote desktop (gaming; abused)' }
+    @{ Name='Jump Desktop';                 Exe=@('jumpdesktop','jumpconnect','jwm-prod'); Svc=@('jump*'); Path=@('*\jump desktop*','*\jumpdesktop*'); Signer=@('phase five','jump desktop'); Class='Remote desktop' }
+    @{ Name='Getscreen';                    Exe=@('getscreen'); Svc=@('getscreen*'); Path=@('*\getscreen*'); Signer=@('getscreen'); Class='Remote support (abused in scams)' }
+    @{ Name='Iperius Remote';               Exe=@('iperiusremote'); Svc=@('iperius*'); Path=@('*\iperius*'); Signer=@('enter srl','iperius'); Class='Remote support' }
+    @{ Name='DWService / DWAgent';          Exe=@('dwagent','dwagsvc','dwaglnc'); Svc=@('dwagent*'); Path=@('*\dwagent*','*\dwservice*'); Signer=@('dwservice'); Class='Remote support (open-source, abused)' }
+    @{ Name='Distant Desktop';              Exe=@('distant_desktop'); Svc=@(); Path=@('*\distant desktop*'); Signer=@(); Class='Remote control (abused in scams)' }
+    @{ Name='LiteManager';                  Exe=@('romserver','romfusclient','romviewer'); Svc=@('romservice*','litemanager*'); Path=@('*\litemanager*'); Signer=@('litemanager'); Class='Remote control (abused as a RAT)' }
+    @{ Name='ShowMyPC';                     Exe=@('showmypc'); Svc=@('showmypc*'); Path=@('*\showmypc*'); Signer=@('showmypc'); Class='Remote support (abused)' }
+    @{ Name='AeroAdmin';                    Exe=@('aeroadmin'); Svc=@(); Path=@('*\aeroadmin*'); Signer=@('aeroadmin'); Class='Remote control (abused in scams)' }
+    @{ Name='AweRay / AweSun';              Exe=@('aweray_remote','awesun','aweray'); Svc=@('aweray*'); Path=@('*\aweray*','*\awesun*'); Signer=@('aweray'); Class='Remote control (abused)' }
+    @{ Name='HopToDesk';                    Exe=@('hoptodesk'); Svc=@('hoptodesk*'); Path=@('*\hoptodesk*'); Signer=@('hoptodesk'); Class='Remote control (abused)' }
+    @{ Name='Chrome Remote Desktop';        Exe=@('remoting_host','remote_assistance_host'); Svc=@('chrome remote desktop*'); Path=@('*\chrome remote desktop*'); Signer=@(); Class='Remote desktop' }
+    @{ Name='FastViewer';                   Exe=@('fastviewer','fastclient','fastmaster'); Svc=@('fastviewer*'); Path=@('*\fastviewer*'); Signer=@('fastviewer'); Class='Remote support (abused)' }
+    @{ Name='SuperOps';                     Exe=@('superops','superopsticket'); Svc=@('superops*'); Path=@('*\superops*'); Signer=@('superops'); Class='RMM agent' }
+    @{ Name='Mikogo';                       Exe=@('mikogo','mikogo-host','mikogo-service'); Svc=@('mikogo*'); Path=@('*\mikogo*'); Signer=@('mikogo','snapview'); Class='Remote support / screen sharing' }
+    @{ Name='Atera Splashtop (Streamer)';   Exe=@('atera_agent'); Svc=@('ateraagent*'); Path=@('*\atera*'); Signer=@('atera'); Class='RMM agent (abused)' }
+
+    # ── Mesh VPN / tunneling (used by attackers to reach a host or for C2) ───────
+    @{ Name='Tailscale';                    Exe=@('tailscale','tailscaled','tailscale-ipn'); Svc=@('tailscale*'); Path=@('*\tailscale*'); Signer=@('tailscale'); Class='Mesh VPN (used by attackers for access)' }
+    @{ Name='ZeroTier';                     Exe=@('zerotier-one_x64','zerotier-one','zerotier'); Svc=@('zerotier*'); Path=@('*\zerotier*'); Signer=@('zerotier'); Class='Mesh VPN (used by attackers for access)' }
+    @{ Name='NetBird';                      Exe=@('netbird','netbird-ui'); Svc=@('netbird*'); Path=@('*\netbird*'); Signer=@('netbird','wiretrustee'); Class='Mesh VPN (used by attackers for access)' }
+    @{ Name='frp (Fast Reverse Proxy)';     Exe=@('frpc','frps'); Svc=@(); Path=@('*\frp*'); Signer=@(); Class='Tunneling tool (used to expose remote access)' }
+    @{ Name='LocalXpose';                   Exe=@('loclx'); Svc=@(); Path=@('*\localxpose*'); Signer=@(); Class='Tunneling tool' }
+    @{ Name='localtonet';                   Exe=@('localtonet'); Svc=@('localtonet*'); Path=@('*\localtonet*'); Signer=@(); Class='Tunneling tool' }
+    @{ Name='playit.gg';                    Exe=@('playit'); Svc=@('playit*'); Path=@('*\playit*'); Signer=@(); Class='Tunneling tool' }
+    @{ Name='plink (PuTTY link)';           Exe=@('plink'); Svc=@(); Path=@(); Signer=@(); Class='SSH tunneling tool (used for port-forward C2)' }
+
+    # ── Known RAT / C2 families (default names; renamed variants are caught by the
+    #    unsigned + user-writable-path + deep-AppData heuristics in the scans) ────
+    @{ Name='AsyncRAT (malware)';           Exe=@('asyncrat','asyncclient'); Svc=@(); Path=@(); Signer=@(); Class='Remote Access Trojan' }
+    @{ Name='Remcos (malware)';             Exe=@('remcos'); Svc=@(); Path=@('*\remcos*'); Signer=@(); Class='Remote Access Trojan' }
+    @{ Name='njRAT / Bladabindi (malware)'; Exe=@('njrat'); Svc=@(); Path=@(); Signer=@(); Class='Remote Access Trojan' }
+    @{ Name='Quasar RAT (malware)';         Exe=@('quasar','quasarrat'); Svc=@(); Path=@(); Signer=@(); Class='Remote Access Trojan' }
+    @{ Name='XWorm (malware)';              Exe=@('xworm'); Svc=@(); Path=@(); Signer=@(); Class='Remote Access Trojan' }
+    @{ Name='DCRat (malware)';              Exe=@('dcrat'); Svc=@(); Path=@(); Signer=@(); Class='Remote Access Trojan' }
+    @{ Name='NanoCore (malware)';           Exe=@('nanocore'); Svc=@(); Path=@(); Signer=@(); Class='Remote Access Trojan' }
+    @{ Name='VenomRAT (malware)';           Exe=@('venomrat'); Svc=@(); Path=@(); Signer=@(); Class='Remote Access Trojan' }
+    @{ Name='Cobalt Strike (C2)';           Exe=@('cobaltstrike'); Svc=@(); Path=@(); Signer=@(); Class='Command-and-control framework' }
 )
 
 # Keyword list for TEXT scans (registry values, scheduled-task command lines).
@@ -106,7 +160,19 @@ $ratKeywords = @(
     'rustdesk','radmin','realvnc','tightvnc','ultravnc','tigervnc','winvnc',
     'ammyy','dameware','netsupport','supremo','ultraviewer','remotepc','zohoassist',
     'gotoassist','gotomypc','anyviewer','rutserv','bomgar','beyondtrust',
-    'ngrok','cloudflared','ateraagent','ninjarmm','kaseya','pulseway'
+    'ngrok','cloudflared','ateraagent','ninjarmm','kaseya','pulseway',
+    # additional RMM / remote tools
+    'simplehelp','itarian','pdq-connect','pdqconnect','n-able','centrastage','aurora-agent',
+    'syncro','kabuto','action1','level-remote','tacticalrmm','tacticalagent','meshagent',
+    'meshcentral','desktopcentral','immybot','goverlan','isllight','parsec','jumpdesktop',
+    'getscreen','iperius','dwagent','dwservice','distant_desktop','litemanager','romserver',
+    'showmypc','aeroadmin','aweray','awesun','hoptodesk','remoting_host','fastviewer','superops',
+    'mikogo','tailscale','zerotier','netbird','localxpose','localtonet','playit',
+    # tunneling / reverse-shell
+    'frpc','frps','loclx','plink',
+    # known RAT / C2 family names
+    'remcos','njrat','quasar','asyncrat','venomrat','nanocore','darkcomet','netwire',
+    'xworm','dcrat','bitrat','warzonerat','orcus','limerat','cobaltstrike','bruteratel'
 )
 
 # Benign comms / cloud-sync names that must never be flagged on name alone
@@ -128,6 +194,9 @@ $ratPorts = @{
     5985='WinRM HTTP'; 5986='WinRM HTTPS'; 22='SSH'; 23='Telnet'
     4899='Radmin'; 6568='Remote Utilities'; 6129='DameWare'
     8040='ScreenConnect'; 55000='ScreenConnect'; 6667='IRC/Botnet C2'
+    4782='Quasar RAT C2'; 1604='DarkComet C2'; 1177='njRAT C2'; 5552='njRAT C2'
+    6606='AsyncRAT C2'; 7707='AsyncRAT C2'; 8808='AsyncRAT C2'; 2404='Remcos C2'
+    3460='Bifrost/RAT'; 9999='RAT C2'; 5050='RAT C2'
 }
 # Management ports that are commonly legitimate — flagged but at MEDIUM, not HIGH
 $mgmtPorts = @(22,3389,5985,5986)
@@ -139,7 +208,14 @@ $ratFolders = @(
     "$env:PROGRAMFILES\UltraVNC", "$env:PROGRAMFILES\Radmin", "$env:PROGRAMFILES\ScreenConnect",
     "$env:PROGRAMFILES\Supremo", "$env:PROGRAMFILES\UltraViewer", "$env:PROGRAMFILES\AnyViewer",
     "${env:ProgramFiles(x86)}\TeamViewer", "${env:ProgramFiles(x86)}\AnyDesk",
-    "${env:ProgramFiles(x86)}\UltraViewer", "$env:LOCALAPPDATA\ngrok"
+    "${env:ProgramFiles(x86)}\UltraViewer", "$env:LOCALAPPDATA\ngrok",
+    "$env:PROGRAMFILES\SimpleHelp", "$env:PROGRAMDATA\SimpleHelpCustomer",
+    "$env:PROGRAMFILES\RustDesk", "$env:APPDATA\RustDesk",
+    "$env:PROGRAMFILES\Splashtop", "${env:ProgramFiles(x86)}\Splashtop",
+    "$env:PROGRAMFILES\AeroAdmin", "$env:PROGRAMFILES\LiteManager Pro - Server",
+    "$env:PROGRAMFILES\DWAgent", "$env:PROGRAMFILES\Getscreen.me",
+    "$env:PROGRAMFILES\Mesh Agent", "$env:PROGRAMFILES\TacticalAgent",
+    "$env:LOCALAPPDATA\Programs\distant-desktop", "$env:APPDATA\HopToDesk"
 )
 
 # ── Trust / catalog helpers ─────────────────────────────────────────────────
@@ -175,18 +251,25 @@ function Get-FileTrust {
 
 function Find-RemoteTool {
     # Precise catalog match. Returns the catalog entry hashtable, or $null.
-    param([string]$Name, [string]$Display, [string]$Path, [string]$Signer)
-    $n    = if ($Name)    { $Name.ToLower() }    else { '' }
-    $disp = if ($Display) { $Display.ToLower() } else { '' }
-    $pth  = if ($Path)    { $Path.ToLower() }    else { '' }
-    $sgn  = if ($Signer)  { $Signer.ToLower() }  else { '' }
-    $base = $n -replace '\.exe$',''
-    if ($base -match '[\\/]') { $base = ($base -split '[\\/]')[-1] }
+    #   -Exe         executable file name (with/without .exe) -> matched EXACTLY to catalog Exe base names
+    #   -ServiceName Windows service short name               -> matched to catalog Svc patterns
+    #   -Display     Windows service display name             -> matched to catalog Svc patterns
+    #   -Path        full path / command line                 -> matched to catalog Path patterns
+    #   -Signer      Authenticode signer common name          -> matched to catalog Signer list
+    # Svc patterns are matched ONLY against service name/display (never against an
+    # exe name) so a broad pattern like 'level*' can't flag an unrelated level.exe.
+    param([string]$Exe, [string]$ServiceName, [string]$Display, [string]$Path, [string]$Signer)
+    $base = ''
+    if ($Exe) { $base = ($Exe.ToLower() -replace '\.exe$',''); if ($base -match '[\\/]') { $base = ($base -split '[\\/]')[-1] } }
+    $svcN = if ($ServiceName) { $ServiceName.ToLower() } else { '' }
+    $disp = if ($Display)     { $Display.ToLower() }     else { '' }
+    $pth  = if ($Path)        { $Path.ToLower() }        else { '' }
+    $sgn  = if ($Signer)      { $Signer.ToLower() }      else { '' }
     foreach ($t in $RemoteTools) {
-        foreach ($e in $t.Exe)    { if ($e -and $base -eq $e)                         { return $t } }
-        foreach ($s in $t.Svc)    { if ($s -and ($n -like $s -or $disp -like $s))     { return $t } }
-        foreach ($p in $t.Path)   { if ($p -and $pth -like $p.ToLower())              { return $t } }
-        foreach ($g in $t.Signer) { if ($g -and $sgn -and $sgn -like "*$g*")          { return $t } }
+        if ($base) { foreach ($e in $t.Exe) { if ($e -and $base -eq $e) { return $t } } }
+        foreach ($s in $t.Svc) { if ($s -and (($svcN -and $svcN -like $s) -or ($disp -and $disp -like $s))) { return $t } }
+        if ($pth) { foreach ($p in $t.Path) { if ($p -and $pth -like $p.ToLower()) { return $t } } }
+        if ($sgn) { foreach ($g in $t.Signer) { if ($g -and $sgn -like "*$g*") { return $t } } }
     }
     return $null
 }
@@ -237,7 +320,7 @@ $suspProcs = New-Object 'System.Collections.Generic.List[object]'
 foreach ($p in $allProcs) {
     if (-not $p.Path) { continue }            # no image path = protected/system; nothing to assess
     $trust = Get-FileTrust $p.Path
-    $tool  = Find-RemoteTool -Name $p.Name -Path $p.Path -Signer $trust.SignerName
+    $tool  = Find-RemoteTool -Exe $p.Name -Path $p.Path -Signer $trust.SignerName
     $bad   = Test-BadPath $p.Path
 
     # Microsoft-signed and benign signed comms apps are never flagged on name alone
@@ -277,7 +360,7 @@ foreach ($s in $allSvcs) {
         else   { $binPath = $pn }
     }
     $trust = Get-FileTrust $binPath
-    $tool  = Find-RemoteTool -Name $s.Name -Display $s.DisplayName -Path $s.PathName -Signer $trust.SignerName
+    $tool  = Find-RemoteTool -Exe $binPath -ServiceName $s.Name -Display $s.DisplayName -Path $s.PathName -Signer $trust.SignerName
     $bad   = Test-BadPath $s.PathName
 
     if (-not $tool -and $trust.IsMicrosoft) { continue }
@@ -763,7 +846,7 @@ try {
             $trust = Get-FileTrust $exePath
             if ($trust.IsMicrosoft) { return }
             if (Get-WhitelistMatch $exeName) { return }
-            $tool = Find-RemoteTool -Name $exeName -Path $exePath -Signer $trust.SignerName
+            $tool = Find-RemoteTool -Exe $exeName -Path $exePath -Signer $trust.SignerName
 
             if ($tool) {
                 $sev = 'HIGH';   $reason = "Remote access tool in AppData: $($tool.Name) — $($tool.Class)"
