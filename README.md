@@ -46,9 +46,11 @@ That's it. The script will:
 | 6 | Known install folders | TeamViewer, AnyDesk, VNC, ScreenConnect, etc. |
 | 7 | RDP configuration | enabled state, port, Network Level Authentication |
 | 8 | ScreenConnect / ConnectWise | deep detection incl. the LSA SSP-DLL persistence trick + removal steps |
-| 9 | AppData executables | catalogued tools / unsigned remote-named binaries only |
-|10 | Remote-access users | members of Administrators and Remote Desktop Users (SID-based, language-independent) |
-|11 | Suspicious outbound traffic | beaconing / odd ports from untrusted processes |
+| 9 | AppData executables | catalogued tools / unsigned remote-named binaries (incl. buried deep) |
+|10 | Startup folders | per-user + common Startup persistence (remote tools, scripts, unsigned exes) |
+|11 | Defender status & exclusions | real-time protection off, tamper protection off, scan exclusions |
+|12 | WMI persistence | event-subscription (CommandLine/ActiveScript) fileless persistence |
+|13 | Suspicious outbound traffic | beaconing / odd ports from untrusted processes, with owning process + path |
 
 ## How false positives are kept low
 

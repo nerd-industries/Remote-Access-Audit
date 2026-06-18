@@ -904,77 +904,105 @@ try {
 }
 Write-Host "    Found: $($appDataFindings.Count)" -ForegroundColor Gray
 
-# ── Scan 9: Remote access users ───────────────────────────────────────────────
-Write-Host "  [10/11] Checking users with remote access permissions..." -ForegroundColor Yellow
-$remoteUserFindings = New-Object 'System.Collections.Generic.List[object]'
-
+# ── Scan 9b: Startup-folder persistence ───────────────────────────────────────
+Write-Host "  [9b] Checking Startup folders..." -ForegroundColor Yellow
+$suspStartup = New-Object 'System.Collections.Generic.List[object]'
 try {
-    # Resolve group membership by well-known SID so localized group names and
-    # localized "net user" output never break parsing.
-    function Get-GroupMemberNames([string]$sid) {
-        $names = @()
-        if ($null -ne (Get-Command Get-LocalGroupMember -ErrorAction SilentlyContinue)) {
-            try {
-                Get-LocalGroupMember -SID $sid -ErrorAction Stop | ForEach-Object {
-                    $names += ($_.Name -replace '^.*\\','')   # strip COMPUTER\ or DOMAIN\ prefix
-                }
-                return $names
-            } catch {}
+    $startupDirs = New-Object 'System.Collections.Generic.List[string]'
+    $startupDirs.Add("$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Startup")
+    $usersRoot2 = Split-Path $env:USERPROFILE -Parent
+    if (Test-Path $usersRoot2) {
+        Get-ChildItem $usersRoot2 -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+            $sp = Join-Path $_.FullName 'AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup'
+            if (Test-Path $sp) { $startupDirs.Add($sp) }
         }
-        # CIM fallback — also resolves the group by SID, locale-independent
-        try {
-            $grp = Get-CimInstance Win32_Group -Filter "SID='$sid'" -ErrorAction Stop
-            if ($grp) {
-                Get-CimInstance -Query "ASSOCIATORS OF {Win32_Group.Domain='$($grp.Domain)',Name='$($grp.Name)'} WHERE ResultClass=Win32_Account" -ErrorAction SilentlyContinue |
-                    ForEach-Object { $names += $_.Name }
+    }
+    $wsh = $null; try { $wsh = New-Object -ComObject WScript.Shell } catch {}
+    foreach ($sd in ($startupDirs | Sort-Object -Unique)) {
+        Get-ChildItem -Path $sd -File -Force -ErrorAction SilentlyContinue | ForEach-Object {
+            $item = $_.FullName; $name = $_.Name; $ext = $_.Extension.ToLower()
+            if ($ext -eq '.ini') { return }      # desktop.ini etc.
+            $target = $item
+            if ($ext -eq '.lnk' -and $wsh) { try { $t = $wsh.CreateShortcut($item).TargetPath; if ($t) { $target = $t } } catch {} }
+
+            $kw    = $ratKeywords | Where-Object { $target -like "*$_*" -or $name -like "*$_*" } | Select-Object -First 1
+            $trust = Get-FileTrust $target
+            $tool  = Find-RemoteTool -Exe (Split-Path $target -Leaf) -Path $target -Signer $trust.SignerName
+            if (-not $tool -and -not $kw) {
+                if ($trust.IsMicrosoft)      { return }
+                if (Get-WhitelistMatch $target) { return }
+                if (Get-WhitelistMatch $name)   { return }
+                if ($trust.Signed)           { return }   # signed-publisher startup item is normal
             }
-        } catch {}
-        return $names
+            $isScript = @('.bat','.cmd','.vbs','.js','.ps1','.hta','.scr') -contains $ext
+            if ($tool -or $kw -or $isScript -or -not $trust.Signed) {
+                $sev    = if ($tool -or $kw) { 'HIGH' } else { 'MEDIUM' }
+                $reason = if     ($tool)     { "Startup item launches a remote tool: $($tool.Name)" }
+                          elseif ($kw)       { "Startup item references a remote tool: $kw" }
+                          elseif ($isScript) { "Startup runs a script ($ext) at every login — unusual for normal apps" }
+                          else               { 'Unsigned program set to run at every login' }
+                $suspStartup.Add([PSCustomObject]@{
+                    Name=$name; Path=$item; Target=$target; Sev=$sev; Reason=$reason
+                    Fix="Remove the startup entry:`nRemove-Item -LiteralPath '$item' -Force`nIf the target is malicious, delete it too:`nRemove-Item -LiteralPath '$target' -Force"
+                })
+            }
+        }
     }
+} catch { Write-Host "    Startup scan error: $_" -ForegroundColor Red }
+Write-Host "    Found: $($suspStartup.Count)" -ForegroundColor Gray
 
-    $adminUsers = Get-GroupMemberNames 'S-1-5-32-544'   # Administrators
-    $rdpUsers   = Get-GroupMemberNames 'S-1-5-32-555'   # Remote Desktop Users
-
-    # Enumerate local users
-    if ($null -ne (Get-Command Get-LocalUser -ErrorAction SilentlyContinue)) {
-        $localUsers = Get-LocalUser -ErrorAction SilentlyContinue
+# ── Scan 9c: Microsoft Defender status & exclusions ───────────────────────────
+# Attackers routinely disable real-time protection and add scan exclusions so
+# their remote-access tool is never inspected. Surfacing these is high-value.
+Write-Host "  [9c] Checking Microsoft Defender status & exclusions..." -ForegroundColor Yellow
+$defenderFindings = New-Object 'System.Collections.Generic.List[object]'
+try {
+    if (Get-Command Get-MpPreference -ErrorAction SilentlyContinue) {
+        $mp = Get-MpPreference -ErrorAction SilentlyContinue
+        $ms = $null; try { $ms = Get-MpComputerStatus -ErrorAction SilentlyContinue } catch {}
+        if ($ms) {
+            if ($ms.PSObject.Properties['RealTimeProtectionEnabled'] -and -not $ms.RealTimeProtectionEnabled) {
+                $defenderFindings.Add([PSCustomObject]@{ Item='Real-time protection DISABLED'; Detail='Defender real-time protection is off — a common step right after a RAT is installed.'; Sev='HIGH'; Fix='Set-MpPreference -DisableRealtimeMonitoring $false' })
+            }
+            if ($ms.PSObject.Properties['IsTamperProtected'] -and -not $ms.IsTamperProtected) {
+                $defenderFindings.Add([PSCustomObject]@{ Item='Tamper Protection OFF'; Detail='Tamper Protection is off, letting malware change Defender settings.'; Sev='MEDIUM'; Fix='Turn on Tamper Protection: Windows Security > Virus & threat protection > Manage settings.' })
+            }
+        }
+        if ($mp) {
+            foreach ($x in @($mp.ExclusionPath))      { if ($x) { $isBad=(Test-BadPath $x) -or ($x -match '^[A-Za-z]:\\?$') -or ($x -eq '*'); $defenderFindings.Add([PSCustomObject]@{ Item="Scan exclusion — path: $x"; Detail='A folder/file excluded from antivirus scanning. Operators add exclusions so their tool is never scanned.'; Sev=$(if($isBad){'HIGH'}else{'MEDIUM'}); Fix="Remove-MpPreference -ExclusionPath '$x'" }) } }
+            foreach ($x in @($mp.ExclusionProcess))   { if ($x) { $defenderFindings.Add([PSCustomObject]@{ Item="Scan exclusion — process: $x"; Detail='A process excluded from antivirus scanning.'; Sev='MEDIUM'; Fix="Remove-MpPreference -ExclusionProcess '$x'" }) } }
+            foreach ($x in @($mp.ExclusionExtension)) { if ($x) { $defenderFindings.Add([PSCustomObject]@{ Item="Scan exclusion — extension: $x"; Detail='A file extension excluded from antivirus scanning.'; Sev='MEDIUM'; Fix="Remove-MpPreference -ExclusionExtension '$x'" }) } }
+        }
     } else {
-        $localUsers = Get-CimInstance Win32_UserAccount -Filter 'LocalAccount=true' -ErrorAction SilentlyContinue |
-                      Select-Object Name, @{N='Enabled';E={ -not $_.Disabled }}
+        Write-Host "    (Get-MpPreference unavailable; a third-party AV may be in use)" -ForegroundColor Gray
     }
+} catch { Write-Host "    Defender scan error: $_" -ForegroundColor Red }
+Write-Host "    Found: $($defenderFindings.Count)" -ForegroundColor Gray
 
-    foreach ($usr in $localUsers) {
-        $u = $usr.Name
-        if (-not $u) { continue }
-        $isRdp   = $rdpUsers   -contains $u
-        $isAdmin = $adminUsers -contains $u
-        if (-not ($isRdp -or $isAdmin)) { continue }
-
-        $accessType = @()
-        if ($isAdmin) { $accessType += 'Local Administrator' }
-        if ($isRdp)   { $accessType += 'Remote Desktop (RDP)' }
-        # Informational only — every PC has a primary admin account, so this is not a
-        # risk by itself. Listed so a tech can spot an account they do not recognize.
-        $sev = 'LOW'
-
-        $active = if ($null -ne $usr.Enabled) { if ($usr.Enabled) { 'Yes' } else { 'No' } } else { 'Unknown' }
-        $last   = if ($usr.PSObject.Properties['LastLogon'] -and $usr.LastLogon) { [string]$usr.LastLogon } else { 'Never / Unknown' }
-        $pw     = if ($usr.PSObject.Properties['PasswordExpires']) { if ($usr.PasswordExpires) { [string]$usr.PasswordExpires } else { 'Never' } } else { 'N/A' }
-
-        $remoteUserFindings.Add([PSCustomObject]@{
-            Username   = $u
-            Access     = $accessType -join ', '
-            Active     = $active
-            LastLogon  = $last
-            PwExpires  = $pw
-            Sev        = $sev
-            Fix        = "To remove from Remote Desktop Users:`nnet localgroup `"Remote Desktop Users`" `"$u`" /delete`n`nTo disable account:`nnet user `"$u`" /active:no`n`nTo remove admin rights:`nnet localgroup Administrators `"$u`" /delete"
+# ── Scan 9d: WMI event-subscription persistence ───────────────────────────────
+# Fileless persistence: an __EventFilter triggers a CommandLine/ActiveScript
+# consumer at boot/logon. Used by RATs to survive reboots without a file on disk.
+Write-Host "  [9d] Checking WMI persistence (event subscriptions)..." -ForegroundColor Yellow
+$wmiFindings = New-Object 'System.Collections.Generic.List[object]'
+try {
+    $consumers = Get-WmiObject -Namespace 'root\subscription' -Class __EventConsumer -ErrorAction SilentlyContinue
+    foreach ($c in $consumers) {
+        $action = ''
+        if     ($c.CommandLineTemplate) { $action = [string]$c.CommandLineTemplate }
+        elseif ($c.ExecutablePath)      { $action = [string]$c.ExecutablePath }
+        elseif ($c.ScriptText)          { $st = [string]$c.ScriptText; $action = 'Script: ' + ($st.Substring(0,[Math]::Min(220,$st.Length)) -replace '\s+',' ') }
+        else   { continue }   # log-only consumers don't execute anything
+        if ($c.Name -match 'SCM Event|Microsoft|SCCM|CCM|BVTConsumer|TSEvent') { continue }   # known defaults
+        $kw  = $ratKeywords | Where-Object { $action -like "*$_*" } | Select-Object -First 1
+        $bad = (Test-BadPath $action) -or ($action -match 'powershell|cmd\.exe|wscript|cscript|mshta|rundll32|regsvr32|certutil|bitsadmin|-enc |frombase64|downloadstring|iex')
+        $sev = if ($kw -or $bad) { 'HIGH' } else { 'MEDIUM' }
+        $wmiFindings.Add([PSCustomObject]@{
+            Name=$c.Name; Type=$c.__CLASS; Action=$action; Sev=$sev
+            Fix="Inspect, then remove the subscription (run in Admin PowerShell):`nGet-WmiObject -Namespace root\subscription -Class __EventConsumer | ? Name -eq '$($c.Name)' | Remove-WmiObject`nGet-WmiObject -Namespace root\subscription -Class __FilterToConsumerBinding | ? { `$_.Consumer -match '$($c.Name)' } | Remove-WmiObject`n# Then remove the matching __EventFilter."
         })
     }
-} catch {
-    Write-Host "    Remote user scan error: $_" -ForegroundColor Red
-}
-Write-Host "    Found: $($remoteUserFindings.Count) accounts with elevated/remote access" -ForegroundColor Gray
+} catch { Write-Host "    WMI persistence scan error: $_" -ForegroundColor Red }
+Write-Host "    Found: $($wmiFindings.Count)" -ForegroundColor Gray
 
 # ── Scan 10: Suspicious outbound/inbound network traffic ─────────────────────
 Write-Host "  [11/11] Scanning for suspicious network traffic patterns..." -ForegroundColor Yellow
@@ -1126,7 +1154,9 @@ foreach ($sc in $scFindings) {
     $allFindings.Add("$scNote - $($sc.Sev)")
 }
 foreach ($a in $appDataFindings) { $allFindings.Add("APPDATA: $($a.Path) - $($a.Sev) - $($a.Reason)") }
-foreach ($u in $remoteUserFindings) { if ($u.Sev -ne 'LOW') { $allFindings.Add("USER: $($u.Username) has $($u.Access) - $($u.Sev)") } }
+foreach ($su in $suspStartup)     { $allFindings.Add("STARTUP: $($su.Name) -> $($su.Target) - $($su.Sev)") }
+foreach ($df in $defenderFindings){ $allFindings.Add("DEFENDER: $($df.Item) - $($df.Sev)") }
+foreach ($w in $wmiFindings)      { $allFindings.Add("WMI PERSISTENCE: $($w.Name) - $($w.Sev)") }
 foreach ($tr in $suspTraffic) { $allFindings.Add("TRAFFIC: $($tr.Process) (PID $($tr.PID)) - $($tr.Sev) - $($tr.Reason)") }
 if ($rdpEnabled) {
     $allFindings.Add("RDP: Enabled on port $rdpPort, NLA=$(if($nlaOn){'YES - secure'}else{'NO - insecure'})")
@@ -1233,14 +1263,34 @@ foreach ($a in $appDataFindings) {
         FixLabel   = 'Delete File'
     })
 }
-foreach ($u in $remoteUserFindings) {
+foreach ($su in $suspStartup) {
     $guiFindings.Add([PSCustomObject]@{
-        Category   = 'User'
-        Sev        = $u.Sev
-        Title      = "$($u.Username)  [$($u.Access)]"
-        Detail     = "Active: $($u.Active)  |  Last logon: $($u.LastLogon)  |  PW expires: $($u.PwExpires)"
-        FixScript  = $u.Fix
-        FixLabel   = 'Remove Access'
+        Category   = 'Startup'
+        Sev        = $su.Sev
+        Title      = $su.Name
+        Detail     = "$($su.Reason)`nStartup entry: $($su.Path)`nLaunches: $($su.Target)"
+        FixScript  = $su.Fix
+        FixLabel   = 'Remove Startup'
+    })
+}
+foreach ($df in $defenderFindings) {
+    $guiFindings.Add([PSCustomObject]@{
+        Category   = 'Defender'
+        Sev        = $df.Sev
+        Title      = $df.Item
+        Detail     = $df.Detail
+        FixScript  = $df.Fix
+        FixLabel   = 'Fix Setting'
+    })
+}
+foreach ($w in $wmiFindings) {
+    $guiFindings.Add([PSCustomObject]@{
+        Category   = 'WMI'
+        Sev        = $w.Sev
+        Title      = "WMI subscription: $($w.Name)"
+        Detail     = "Type: $($w.Type)`nRuns: $($w.Action)"
+        FixScript  = $w.Fix
+        FixLabel   = 'Remove'
     })
 }
 foreach ($tr in $suspTraffic) {
@@ -1285,7 +1335,9 @@ $catColor = @{
     'Folder'        = '#92400e'
     'ScreenConnect' = '#dc2626'
     'AppData'       = '#b91c1c'
-    'User'          = '#1d4ed8'
+    'Startup'       = '#1d4ed8'
+    'Defender'      = '#15803d'
+    'WMI'           = '#6d28d9'
     'Traffic'       = '#c2410c'
     'RDP'           = '#9f1239'
 }
@@ -1834,28 +1886,38 @@ $null = $sb.AppendLine((Section 'Hidden Remote Access Tools in AppData' `
     }
 ))
 
-# Remote Access Users section
-$null = $sb.AppendLine('<div class="card">')
-$null = $sb.AppendLine('<h2>&#x1F465; Users With Remote Access Permissions')
-$userCount = $remoteUserFindings.Count
-$userBadge = if ($userCount -gt 0) {
-    "<span style='background:#2563eb;color:#fff;padding:1px 10px;border-radius:12px;font-size:12px;margin-left:8px'>$userCount accounts (info)</span>"
-} else {
-    "<span style='background:#16a34a;color:#fff;padding:1px 10px;border-radius:12px;font-size:12px;margin-left:8px'>Clean</span>"
-}
-$null = $sb.AppendLine("$userBadge</h2>")
-$null = $sb.AppendLine('<p class="intro"><strong>Informational, not a risk.</strong> Every PC has at least one administrator account, so this list is normal. It is shown only so you can scan it for an account you do not recognize (a name you did not create). Accounts here are not counted toward the risk level.</p>')
-if ($remoteUserFindings.Count -gt 0) {
-    $null = $sb.AppendLine('<div class="tbl-wrap"><table>')
-    $null = $sb.AppendLine('<tr><th>Username</th><th>Access Type</th><th>Account Active</th><th>Last Logon</th><th>Password Expires</th><th>Severity</th><th>How to Remove/Restrict</th></tr>')
-    foreach ($u in $remoteUserFindings) {
-        $null = $sb.AppendLine("<tr><td><strong>$(Esc $u.Username)</strong></td><td>$(Esc $u.Access)</td><td>$(Esc $u.Active)</td><td>$(Esc $u.LastLogon)</td><td>$(Esc $u.PwExpires)</td><td>$(Badge $u.Sev)</td><td><div class='fix-box'>$(Esc $u.Fix)</div></td></tr>")
+# Startup folder section
+$null = $sb.AppendLine((Section 'Startup-Folder Persistence' `
+    'Programs and scripts set to launch from a Startup folder at every login. Remote-access tools and scripts placed here are flagged; signed mainstream apps are not.' `
+    $suspStartup `
+    @('Name','Launches','Severity','Reason','How to Remove') `
+    {
+        param($su)
+        "<tr><td><strong>$(Esc $su.Name)</strong></td><td style='font-size:11px;word-break:break-all'>$(Esc $su.Target)</td><td>$(Badge $su.Sev)</td><td>$(Esc $su.Reason)</td><td><div class='fix-box'>$(Esc $su.Fix)</div></td></tr>"
     }
-    $null = $sb.AppendLine('</table></div>')
-} else {
-    $null = $sb.AppendLine('<p class="clean">&#x2714; No unexpected user accounts with remote access found.</p>')
-}
-$null = $sb.AppendLine('</div>')
+))
+
+# Defender status & exclusions section
+$null = $sb.AppendLine((Section 'Antivirus (Defender) Status &amp; Exclusions' `
+    'Disabled protection and scan exclusions are a common way attackers hide a remote-access tool from antivirus. Review any exclusion you did not set intentionally.' `
+    $defenderFindings `
+    @('Item','Detail','Severity','How to Fix') `
+    {
+        param($df)
+        "<tr><td><strong>$(Esc $df.Item)</strong></td><td>$(Esc $df.Detail)</td><td>$(Badge $df.Sev)</td><td><div class='fix-box'>$(Esc $df.Fix)</div></td></tr>"
+    }
+))
+
+# WMI persistence section
+$null = $sb.AppendLine((Section 'WMI Event-Subscription Persistence' `
+    'Fileless persistence: a WMI event subscription runs a command or script at boot/logon. Legitimate management software occasionally uses these, so review the command shown.' `
+    $wmiFindings `
+    @('Subscription','Type','Runs','Severity','How to Remove') `
+    {
+        param($w)
+        "<tr><td><strong>$(Esc $w.Name)</strong></td><td style='font-size:11px'>$(Esc $w.Type)</td><td style='font-size:11px;word-break:break-all'>$(Esc $w.Action)</td><td>$(Badge $w.Sev)</td><td><div class='fix-box'>$(Esc $w.Fix)</div></td></tr>"
+    }
+))
 
 # Suspicious Traffic section
 $null = $sb.AppendLine((Section 'Suspicious Outbound Network Traffic' `

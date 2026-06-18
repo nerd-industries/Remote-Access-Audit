@@ -17,10 +17,15 @@ const REPO_API =
   'https://api.github.com/repos/nerd-industries/Remote-Access-Audit/contents/RemoteAccessAudit.ps1';
 
 export async function onRequest(context) {
-  // If a human opens the URL in a browser, show instructions instead of dumping
-  // raw PowerShell. `irm` requests do not send an `Accept: text/html`.
+  const url = new URL(context.request.url);
+  const wantDownload =
+    url.searchParams.has('download') ||
+    url.pathname.replace(/\/+$/, '').toLowerCase().endsWith('/download');
   const accept = context.request.headers.get('Accept') || '';
-  if (accept.includes('text/html')) {
+
+  // A human opening the URL in a browser (and not asking to download) gets the
+  // instructions page. `irm` requests do not send `Accept: text/html`.
+  if (accept.includes('text/html') && !wantDownload) {
     return new Response(LANDING_HTML, {
       headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' },
     });
@@ -50,22 +55,40 @@ export async function onRequest(context) {
   }
 
   const script = await upstream.text();
-  return new Response(script, {
-    headers: {
-      'content-type': 'text/plain; charset=utf-8',
-      'cache-control': 'no-store', // always serve the latest commit
-      'x-source': 'github-contents-api',
-    },
-  });
+  const respHeaders = {
+    'content-type': 'text/plain; charset=utf-8',
+    'cache-control': 'no-store', // always serve the latest commit
+    'x-source': 'github-contents-api',
+  };
+  if (wantDownload) {
+    // Force the browser to save the file instead of displaying it.
+    respHeaders['content-type'] = 'application/octet-stream';
+    respHeaders['content-disposition'] = 'attachment; filename="RemoteAccessAudit.ps1"';
+  }
+  return new Response(script, { headers: respHeaders });
 }
 
 const LANDING_HTML = `<!doctype html><meta charset="utf-8">
 <title>Nerdy Neighbor — Remote Access Audit</title>
-<body style="font-family:Segoe UI,Arial,sans-serif;max-width:640px;margin:60px auto;padding:0 16px;color:#1e293b">
-<h1>Remote Access Audit</h1>
-<p>Run this on the customer's PC in Windows PowerShell (normal or admin):</p>
-<pre style="background:#0f172a;color:#86efac;padding:14px 16px;border-radius:8px;overflow:auto">irm audit.nerdyneighbor.net | iex</pre>
-<p style="color:#64748b;font-size:13px">Always serves the latest committed version via the GitHub API.</p>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<body style="font-family:Segoe UI,Arial,sans-serif;max-width:660px;margin:56px auto;padding:0 18px;color:#1e293b;line-height:1.5">
+<h1 style="margin-bottom:4px">Remote Access Audit</h1>
+<p style="color:#64748b;margin-top:0">Scan a Windows PC for unauthorized remote-access software.</p>
+
+<h3 style="margin-bottom:6px">Recommended — run it directly</h3>
+<p style="margin-top:0">Open <strong>Windows PowerShell</strong> on the PC, paste this line, press Enter, and click <strong>Yes</strong> on the prompt:</p>
+<div style="display:flex;gap:8px;align-items:stretch;flex-wrap:wrap">
+  <pre id="cmd" style="flex:1;min-width:280px;background:#0f172a;color:#86efac;padding:14px 16px;border-radius:8px;overflow:auto;margin:0">irm audit.nerdyneighbor.net | iex</pre>
+  <button onclick="navigator.clipboard.writeText('irm audit.nerdyneighbor.net | iex').then(()=>{this.textContent='Copied!';setTimeout(()=>this.textContent='Copy',1500)})"
+          style="border:0;border-radius:8px;background:#1e3a5f;color:#fff;font-weight:600;padding:0 18px;cursor:pointer">Copy</button>
+</div>
+
+<h3 style="margin-bottom:6px">Or download the script</h3>
+<p style="margin-top:0">Save the file, then right-click it and choose <em>Run with PowerShell</em> (it will request Administrator rights).</p>
+<p><a href="?download=1" download="RemoteAccessAudit.ps1"
+      style="display:inline-block;background:#16a34a;color:#fff;text-decoration:none;font-weight:700;padding:12px 22px;border-radius:8px">⬇ Download RemoteAccessAudit.ps1</a></p>
+
+<p style="color:#94a3b8;font-size:12px;margin-top:28px">Always serves the latest version via the GitHub API · Nerdy Neighbor</p>
 </body>`;
 
 // Return a tiny PowerShell snippet so that even on failure `| iex` prints a
