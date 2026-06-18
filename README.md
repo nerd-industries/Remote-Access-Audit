@@ -1,9 +1,10 @@
 # Remote Access Audit
 
-A PowerShell tool that scans a Windows PC for remote-access software, hidden
-RATs, suspicious services/tasks/startup entries, risky network connections, and
-accounts with remote/admin access — then opens an interactive remediation window
-and saves an HTML report.
+A PowerShell tool that scans a Windows PC for remote-access software and hidden
+RATs — across processes, services, scheduled tasks, registry/Startup-folder
+persistence, WMI event subscriptions, antivirus tampering, and risky network
+connections — then opens an interactive remediation window and saves an HTML
+report. It self-elevates and is run with a single `irm … | iex` command.
 
 ## How to run
 
@@ -59,8 +60,14 @@ That's it. The script will:
 - **Precise catalog matching** — exact executable names, service patterns,
   install-path hints, and signer names, instead of loose substring keywords
   (so `mailbox.exe`, `toolbox.exe`, `sandboxie.exe`, etc. are no longer flagged).
-- **No broad globs / no "buried in AppData" heuristic** — the AppData scan only
-  surfaces catalogued tools or unsigned binaries with remote-access names.
+- **Vendor-aware AppData depth check** — buried executables are flagged only when
+  **unsigned**; signed apps and known vendor folders (Microsoft/Teams, OneDrive,
+  Chrome, Discord, …) are excluded, so a hidden ScreenConnect still surfaces while
+  normal apps don't.
+- **Signature-aware autostart checks** — registry Run keys and Startup items are
+  trusted when Microsoft-signed, a benign app by name (Teams/OneDrive/Slack), or
+  signed by any valid publisher; only unsigned autostarts from user-writable
+  paths are flagged.
 
 ## Hosting (`audit.nerdyneighbor.net`)
 
@@ -71,9 +78,16 @@ with `Accept: application/vnd.github.raw` and returns the raw script. That means
 
 - `irm audit.nerdyneighbor.net | iex` always runs the **latest commit** (the API
   is not CDN-cached like `raw.githubusercontent.com`).
-- Opening the URL in a browser shows usage instructions instead of raw script.
-- The repo is connected to Pages via Git, so **pushing to `main` redeploys the
-  function automatically**. The *script* is always current regardless of deploys.
+- Opening the URL in a **browser** shows usage instructions, a **Copy** button for
+  the command, and a **Download `RemoteAccessAudit.ps1`** button (`?download=1`
+  returns the file as an attachment).
+- A one-page printable technician sheet is served at **`/print`**.
+- The **script** is always current regardless of deploys, because the function
+  fetches it from the GitHub API at request time. The **function code itself** is
+  deployed with `wrangler pages deploy public` (direct upload) and does **not**
+  auto-redeploy on push — re-run that command after editing `functions/index.js`
+  or `public/`. (Optionally connect the repo under Pages → Settings → Builds &
+  deployments to enable push-to-deploy.)
 
 ### Optional: lift the GitHub rate limit
 Unauthenticated GitHub API calls are limited to 60/hour per IP. Since the proxy
