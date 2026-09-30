@@ -1094,7 +1094,8 @@ function Scan-Autoruns {
     $l = Get-ItemProperty -LiteralPath "Registry::$lsa" -ErrorAction SilentlyContinue
     foreach ($vn in 'Security Packages', 'Authentication Packages', 'Notification Packages') {
         foreach ($pkg in @($l.$vn)) {
-            $pk = "$pkg".Trim().ToLower()
+            $pk = "$pkg".Trim().Trim('"').Trim().ToLower()   # Windows 10/11 store a literal "" placeholder
+            if (-not $pk) { continue }
             if ($known -contains $pk -or ($vn -eq 'Notification Packages' -and $pk -in 'scecli', 'rassfm', 'passfilt')) { continue }
             $dll = Join-Path "$env:windir\System32" ($(if ($pk -like '*.dll') { $pk } else { "$pk.dll" }))
             $t = Get-FileTrust $dll
@@ -1154,17 +1155,32 @@ function Scan-RemoteToolFiles {
         $folders += Join-Path $p.Path 'AppData\Local\Programs\distant-desktop'
     }
     $folders += "$env:windir\Temp\ScreenConnect", "$env:SystemDrive\Temp\ScreenConnect"
+    # One finding per tool, listing all of its folders
+    $byTool = [ordered]@{}
     foreach ($f in ($folders | Sort-Object -Unique)) {
         if (-not (Test-Path -LiteralPath $f -PathType Container)) { continue }
         $tool = Find-RemoteTool -Path "$f\"
         if (-not $tool) { $tool = Find-RemoteToolByProduct (Split-Path $f -Leaf) '' }
         $tname = if ($tool) { $tool.Name } else { Split-Path $f -Leaf }
-        $sev = if ($tool) { Get-ToolSeverity $tool (Test-UserWritablePath $f) $true } else { 'MEDIUM' }
-        if ($sev -eq 'HIGH' -and $f -notlike '*\AppData\*' -and $f -notlike '*\Temp\*') { $sev = 'MEDIUM' }
-        $exes = @(Get-ChildItem -LiteralPath $f -Filter *.exe -Recurse -Force -ErrorAction SilentlyContinue | Select-Object -First 4 | ForEach-Object { $_.Name })
-        Add-Finding -Category 'Remote access software' -Severity $sev -Title "$tname folder on disk: $f" `
-            -Detail 'Program or configuration folder of a remote-access tool. Uninstall the program first (Programs and Features finding) - then quarantine what is left.' `
-            -Evidence ([ordered]@{ 'Folder' = $f; 'Programs inside' = ($exes -join ', ') }) -Actions @(Act-Quarantine $f 'Quarantine folder') -Key "folder|$f"
+        if (-not $byTool.Contains($tname)) { $byTool[$tname] = @{ Tool = $tool; Folders = @() } }
+        $byTool[$tname].Folders += $f
+    }
+    foreach ($tname in $byTool.Keys) {
+        $tool = $byTool[$tname].Tool; $list = @($byTool[$tname].Folders)
+        $sev = if ($tool) { Get-ToolSeverity $tool $false $true } else { 'MEDIUM' }
+        $ev = [ordered]@{}
+        $i = 0
+        foreach ($f in $list) {
+            $i++
+            $exes = @(Get-ChildItem -LiteralPath $f -Filter *.exe -Recurse -Force -ErrorAction SilentlyContinue | Select-Object -First 4 | ForEach-Object { $_.Name })
+            $ev["Folder $i"] = $f + $(if ($exes.Count) { "   (programs: $($exes -join ', '))" } else { '' })
+        }
+        Add-Finding -Category 'Remote access software' -Severity $sev -Title "$tname files on disk ($($list.Count) folder$(if ($list.Count -ne 1) { 's' }))" `
+            -Detail $(if ($sev -eq 'INFO') { "Expected: $(Get-TrustReason $tname)" } else { 'Program and settings folders of a remote-access tool. Uninstall the program first (Programs and Features finding) - then quarantine what is left.' }) `
+            -Evidence $ev -Key "folders|$tname" -Actions @(
+                New-FixAction -Label 'Quarantine folders' -Description "Stops anything running from them, then moves these $($list.Count) folder(s) into $QuarantineDir (reversible): $($list -join '; ')" -Data @{ Paths = $list } -Script {
+                    param($D) $r = @(); foreach ($p in $D.Paths) { try { $r += Invoke-Quarantine $p } catch { $r += $_.Exception.Message } }; $r -join ' | '
+                })
     }
 
     # ScreenConnect full removal (service + uninstaller + LSA package + folders)
