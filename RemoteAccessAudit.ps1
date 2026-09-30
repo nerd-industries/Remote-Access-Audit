@@ -359,9 +359,40 @@ function Find-RemoteToolByProduct {
     return $null
 }
 
+# Nerdy Neighbor's own RustDesk deployment: our installers point RustDesk at our
+# server and write our server key into RustDesk2.toml. A RustDesk that uses our
+# key is ours (INFO); any other RustDesk (public servers = scammer) stays HIGH.
+$OwnRustDeskKey  = 'D11ZYHgpIWTNhltCBMe0f2MQzk+RQp4sI01KbqZj0l4='
+$OwnRustDeskHost = 'rustdesk-relay.nerdyneighbor.net'
+$OwnRustDesk = $null
+function Reset-OwnRustDesk { $script:OwnRustDesk = $null }
+function Test-OwnRustDesk {
+    if ($null -ne $script:OwnRustDesk) { return $script:OwnRustDesk }
+    $paths = @("$env:windir\ServiceProfiles\LocalService\AppData\Roaming\RustDesk\config",
+               "$env:windir\System32\config\systemprofile\AppData\Roaming\RustDesk\config",
+               "$env:ProgramData\RustDesk\config")
+    foreach ($p in (Get-UserProfiles)) { $paths += Join-Path $p.Path 'AppData\Roaming\RustDesk\config' }
+    $script:OwnRustDesk = $false
+    foreach ($d in $paths) {
+        foreach ($f in 'RustDesk2.toml', 'RustDesk.toml') {
+            $file = Join-Path $d $f
+            if (-not (Test-Path -LiteralPath $file)) { continue }
+            $txt = ''; try { $txt = [IO.File]::ReadAllText($file) } catch {}
+            if ($txt.Contains($OwnRustDeskKey) -and $txt.Contains($OwnRustDeskHost)) { $script:OwnRustDesk = $true; return $true }
+        }
+    }
+    return $false
+}
+
 function Test-TrustedTool([string]$Name) {
     foreach ($t in $TrustList) { if ($Name -like "*$t*") { return $true } }
+    if ($Name -like 'RustDesk*' -and (Test-OwnRustDesk)) { return $true }
     return $false
+}
+
+function Get-TrustReason([string]$Name) {
+    if ($Name -like 'RustDesk*' -and (Test-OwnRustDesk)) { return "RustDesk is configured for Nerdy Neighbor's RustDesk server ($OwnRustDeskHost)." }
+    return "$Name is in your trusted list (NN_AUDIT_TRUST)."
 }
 
 function Get-ToolSeverity {
@@ -728,7 +759,7 @@ function Scan-Processes {
             $acts = @(Act-KillProcess $p.Pid $p.Name)
             if ($user) { $acts += Act-Quarantine $p.Path 'Stop + quarantine' }
             Add-Finding -Category 'Remote access software' -Severity $sev -Title "$($tool.Name) is running ($($p.Name))" `
-                -Detail "$($tool.Class). If you (or the customer) did not knowingly install it, remove it - check Programs and Features too." `
+                -Detail $(if ($sev -eq 'INFO') { "Expected: $(Get-TrustReason $tool.Name)" } else { "$($tool.Class). If you (or the customer) did not knowingly install it, remove it - check Programs and Features too." }) `
                 -Evidence $ev -Actions $acts -Key "tool-proc|$($tool.Name)|$($p.Path)"
             continue
         }
@@ -765,7 +796,7 @@ function Scan-Services {
                 continue
             }
             Add-Finding -Category 'Remote access software' -Severity $sev -Title "$($tool.Name) service: $($s.DisplayName) [$($s.State)]" `
-                -Detail "$($tool.Class). A service gives it access at every boot, before anyone logs in. Prefer 'Uninstall' (Programs and Features finding) when there is one; 'Remove service' is the forceful option." `
+                -Detail $(if ($sev -eq 'INFO') { "Expected: $(Get-TrustReason $tool.Name)" } else { "$($tool.Class). A service gives it access at every boot, before anyone logs in. Prefer 'Uninstall' (Programs and Features finding) when there is one; 'Remove service' is the forceful option." }) `
                 -Evidence $ev -Actions @((Act-DisableService $s.Name), (Act-RemoveService $s.Name $bin $user)) -Key "svc|$($s.Name)"
             continue
         }
@@ -817,7 +848,7 @@ function Scan-InstalledPrograms {
             $acts += Act-Uninstall @{ Name = $e.Name; Key = $e.Key; MsiCode = $e.MsiCode; Quiet = $e.Quiet; Uninstall = $e.Uninstall }
         }
         Add-Finding -Category 'Remote access software' -Severity $sev -Title "Installed: $($e.Name)" `
-            -Detail "$($tool.Class). Installed remote-access software stays usable even when it is not running. Confirm with the customer that they (not a caller) installed it." `
+            -Detail $(if ($sev -eq 'INFO') { "Expected: $(Get-TrustReason $tool.Name)" } else { "$($tool.Class). Installed remote-access software stays usable even when it is not running. Confirm with the customer that they (not a caller) installed it." }) `
             -Evidence $ev -Actions $acts -Key "app|$($e.Key)"
     }
 }
@@ -842,7 +873,7 @@ function Scan-Network {
             $sev = if ($trusted) { 'INFO' } elseif ($isMgmt) { 'MEDIUM' } else { 'HIGH' }
             $acts = @(); if ($c.Pid -gt 4 -and -not $trusted) { $acts += Act-KillProcess $c.Pid $pname }
             Add-Finding -Category 'Network' -Severity $sev -Title "Listening for incoming $pNote connections on port $($c.LocalPort) ($pname)" `
-                -Detail $(if ($trusted) { "Expected: $($tool.Name) is in your trusted list." } elseif ($isMgmt) { 'A remote-management port is open to the network. Fine if you set it up; otherwise disable it (see RDP/WinRM findings or remove the program).' } else { 'This port is used by remote-control tools and trojans. Nothing legitimate on a home PC normally listens here.' }) `
+                -Detail $(if ($trusted) { "Expected: $(Get-TrustReason $tool.Name)" } elseif ($isMgmt) { 'A remote-management port is open to the network. Fine if you set it up; otherwise disable it (see RDP/WinRM findings or remove the program).' } else { 'This port is used by remote-control tools and trojans. Nothing legitimate on a home PC normally listens here.' }) `
                 -Evidence $ev -Actions $acts -Key "listen|$($c.LocalPort)|$pname"
         } elseif ($c.State -eq 'Established' -and -not (Test-PrivateIP $c.RemoteAddress)) {
             $note = if ($rNote) { $rNote } else { $pNote }
@@ -1474,6 +1505,7 @@ function Invoke-AllScans {
     param([scriptblock]$OnProgress)
     $script:Findings.Clear(); $script:FindingKeys = @{}; $script:ScanResults.Clear(); $script:ScanNotes.Clear(); $script:EnumErrors = 0
     $script:TrustCache = @{}   # files may have been quarantined/replaced since the last pass
+    Reset-OwnRustDesk
     Update-ProcessTable
     $i = 0
     foreach ($s in $ScanDefs) {

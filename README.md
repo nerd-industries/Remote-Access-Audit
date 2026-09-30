@@ -38,6 +38,12 @@ to the Desktop when the window is closed.
 | `$env:NN_AUDIT_TRUST = 'SuperOps,OpenSSH'` | Remote tools **you** deployed. They are reported as INFO instead of a threat. This is the default; set `'none'` to trust nothing. |
 | `$env:NN_AUDIT_OUT = 'C:\Temp'` | Where to save the report. |
 
+**RustDesk is trusted automatically when it is ours:** if RustDesk's config
+(`RustDesk2.toml` in the service profiles, ProgramData or any user profile)
+points at `rustdesk-relay.nerdyneighbor.net` **and** carries our server key, it is
+reported as INFO. Any other RustDesk (public servers = typical scam) stays HIGH.
+No option needed.
+
 ## The remediation window
 
 - Findings are grouped by category, most severe first, with a plain-English
