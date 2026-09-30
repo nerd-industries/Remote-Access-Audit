@@ -1520,6 +1520,7 @@ $ScanDefs = @(
 function Invoke-AllScans {
     param([scriptblock]$OnProgress)
     $script:Findings.Clear(); $script:FindingKeys = @{}; $script:ScanResults.Clear(); $script:ScanNotes.Clear(); $script:EnumErrors = 0
+    $script:ScanTime = Get-Date -Format 'yyyy-MM-dd HH:mm'
     $script:TrustCache = @{}   # files may have been quarantined/replaced since the last pass
     Reset-OwnRustDesk
     Update-ProcessTable
@@ -1574,10 +1575,26 @@ function Invoke-FindingAction {
 # ---------------------------------------------------------------------------
 function Esc([string]$s) { if (-not $s) { return '' }; return [System.Security.SecurityElement]::Escape($s) }
 
+function Get-ShortResult([string]$Result) {
+    # "Label: long message -> quarantine path (backup in ...)" -> short, printable
+    $r = $Result -replace '^[^:]{1,40}:\s*', ''
+    $r = $r -replace '\s*->\s*C:\\ProgramData\\NerdyNeighbor[^|]*', '' -replace '\s*\((backup|XML backup)[^)]*\)', '' -replace 'HKEY_USERS\\S-1-5-21-[\d-]+', 'HKCU' -replace 'HKEY_LOCAL_MACHINE', 'HKLM'
+    $r = $r -replace '(Quarantined|Deleted) \S:\\(?:[^|]*\\)?([^\\|]+?)(\s*\(|\s*\||$)', '$1 $2$3'
+    $r = $r -replace '(HK[A-Z]+)\\\S*\\([^\\\s|]+)', '$1\...\$2'
+    $r = ($r -replace '\s+', ' ').Trim()
+    if ($r.Length -gt 120) { $r = $r.Substring(0, 117) + '...' }
+    return $r
+}
+
 function Save-Report {
+    param([string]$Computer = $env:COMPUTERNAME, [string]$OsName = '', [string]$ScanTime = '', [string]$RunBy = "$env:USERDOMAIN\$env:USERNAME", [string]$BaseName = '')
     $risk = Get-Risk
-    $os = Get-WmiObject Win32_OperatingSystem -ErrorAction SilentlyContinue
-    $osName = if ($os) { "$($os.Caption) $($os.OSArchitecture) (build $($os.BuildNumber))" } else { 'Windows' }
+    if (-not $OsName) {
+        $os = Get-WmiObject Win32_OperatingSystem -ErrorAction SilentlyContinue
+        $OsName = if ($os) { "$($os.Caption.Trim()) $($os.OSArchitecture) (build $($os.BuildNumber))" } else { 'Windows' }
+    }
+    $osName = $OsName
+    if (-not $ScanTime) { $ScanTime = if ($script:ScanTime) { $script:ScanTime } else { Get-Date -Format 'yyyy-MM-dd HH:mm' } }
     $riskColor = @{ HIGH = '#dc2626'; MEDIUM = '#ea580c'; LOW = '#2563eb'; CLEAN = '#16a34a' }[$risk]
     $sevColor = @{ HIGH = '#dc2626'; MEDIUM = '#ea580c'; LOW = '#2563eb'; INFO = '#64748b' }
     $counts = @{}; foreach ($s in 'HIGH', 'MEDIUM', 'LOW', 'INFO') { $counts[$s] = @($script:Findings | Where-Object { $_.Severity -eq $s }).Count }
@@ -1594,10 +1611,27 @@ function Save-Report {
 .st{float:right;font-size:12px;font-weight:600}.d{font-size:13px;color:#334155;margin:4px 0}table{border-collapse:collapse;width:100%;font-size:12px}
 td,th{text-align:left;padding:4px 8px;border-bottom:1px solid #e2e8f0;vertical-align:top;word-break:break-word}th{background:#f8fafc}
 h2{font-size:16px;margin:22px 0 6px}.ev td:first-child{white-space:nowrap;color:#64748b;width:170px}.small{font-size:12px;color:#64748b}
+.pbtn{float:right;background:#fff;color:#0f172a;border:0;border-radius:6px;padding:7px 14px;font-weight:600;cursor:pointer}
+.print{display:none}
+@media print{
+ @page{size:letter portrait;margin:11mm}
+ body{background:#fff;color:#000;font-size:12.5px;line-height:1.4;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+ .screen{display:none}.print{display:block}
+ .ph{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:3px solid #000;padding-bottom:5px}
+ .ph .t{font-size:24px;font-weight:700}.ph .s{font-size:12px;margin-top:3px}.ph .b{text-align:right;font-size:12px}
+ .res{border:3px solid #000;border-radius:5px;padding:10px 14px;margin:14px 0;font-size:14px}.res b{font-size:17px}
+ h3{font-size:12.5px;text-transform:uppercase;letter-spacing:.6px;border-bottom:2px solid #000;margin:16px 0 6px;padding-bottom:3px}
+ table.pt{width:100%;border-collapse:collapse;font-size:12px}table.pt th{text-align:left;border-bottom:2px solid #000;padding:5px 6px;background:#fff}
+ table.pt td{border-bottom:1px solid #888;padding:6px 6px;vertical-align:top;background:#fff}
+ .lv{display:inline-block;border:1.5px solid #000;border-radius:2px;padding:1px 6px;font-size:10px;font-weight:700;white-space:nowrap}
+ .lv.HIGH{background:#000;color:#fff}.lv.LOW{border-style:dashed}.lv.INFO{border-style:dotted}
+ .ok{font-weight:700}.chk{display:grid;grid-template-columns:1fr 1fr 1fr;gap:3px 16px;font-size:11.5px}
+ .pf{margin-top:18px;border-top:1px solid #000;padding-top:6px;font-size:10px;text-align:center}.ref{font-size:11px;margin-top:8px}
+}
 '@
-    [void]$sb.Append("<!doctype html><html><head><meta charset='utf-8'><title>Remote Access Audit - $(Esc $env:COMPUTERNAME)</title><style>$css</style></head><body><div class='wrap'>")
-    [void]$sb.Append("<div class='hdr'><h1>Remote Access Audit</h1><div class='sub'>Nerdy Neighbor &middot; v$RAA_Version</div><div class='meta'>")
-    foreach ($m in @(@('Computer', $env:COMPUTERNAME), @('Windows', $osName), @('Scanned', (Get-Date -Format 'yyyy-MM-dd HH:mm')), @('Findings', "$($counts.HIGH) high / $($counts.MEDIUM) medium / $($counts.LOW) low"), @('Fixed', $fixed))) {
+    [void]$sb.Append("<!doctype html><html><head><meta charset='utf-8'><title>Remote Access Audit - $(Esc $Computer)</title><style>$css</style></head><body><div class='wrap'>")
+    [void]$sb.Append("<div class='screen'><div class='hdr'><button class='pbtn' onclick='window.print()'>Print (1 page)</button><h1>Remote Access Audit</h1><div class='sub'>Nerdy Neighbor &middot; v$RAA_Version</div><div class='meta'>")
+    foreach ($m in @(@('Computer', $Computer), @('Windows', $osName), @('Scanned', $ScanTime), @('Findings', "$($counts.HIGH) high / $($counts.MEDIUM) medium / $($counts.LOW) low"), @('Fixed', $fixed))) {
         [void]$sb.Append("<div class='m'>$(Esc $m[0])<b>$(Esc ([string]$m[1]))</b></div>")
     }
     $riskMsg = @{ HIGH = 'High risk: remote-access tools or backdoors that need attention.'; MEDIUM = 'Items worth reviewing with the customer.'; LOW = 'Only low-level items found.'; CLEAN = 'No remote-access indicators found.' }[$risk]
@@ -1633,12 +1667,42 @@ h2{font-size:16px;margin:22px 0 6px}.ev td:first-child{white-space:nowrap;color:
         $note = @($r.Notes, $(if ($r.Error) { "ERROR: $($r.Error)" })) | Where-Object { $_ }
         [void]$sb.Append("<tr><td>$(Esc $r.Name)</td><td>$($r.Found)</td><td>$($r.Seconds)s</td><td>$(Esc ($note -join ' '))</td></tr>")
     }
-    [void]$sb.Append("</table><p class='small'>Trusted tools (reported as INFO): $(Esc ($TrustList -join ', ')). Run by $(Esc $env:USERDOMAIN)\$(Esc $env:USERNAME).</p></div></div></body></html>")
+    [void]$sb.Append("</table><p class='small'>Trusted tools (reported as INFO): $(Esc ($TrustList -join ', ')). Run by $(Esc $RunBy).</p></div></div></div>")
 
-    $base = Join-Path $OutDir "RemoteAccessAudit_$($env:COMPUTERNAME)_$RunStamp"
+    # ---- one-page, black-and-white print summary (shown only when printing) ----
+    $issues = @($script:Findings | Where-Object { $_.Severity -ne 'INFO' } | Sort-Object { $order[$_.Severity] }, Category, Title)
+    $info = @($script:Findings | Where-Object { $_.Severity -eq 'INFO' })
+    $nFixed = @($issues | Where-Object { $_.Status -eq 'Fixed' }).Count
+    $nOpen = @($issues | Where-Object { $_.Status -ne 'Fixed' }).Count
+    $verdict = @{ HIGH = 'HIGH RISK - remote-access tools or backdoors still need attention.'; MEDIUM = 'Items still need review.'; LOW = 'Only minor items remain.'; CLEAN = 'No remote-access threats remain on this computer.' }[$risk]
+    [void]$sb.Append("<div class='print'><div class='ph'><div><div class='t'>Remote Access Audit</div><div class='s'>$(Esc $Computer) &middot; $(Esc $osName) &middot; scanned $(Esc $ScanTime)</div></div><div class='b'><b>Nerdy Neighbor</b><br>audit.nerdyneighbor.net</div></div>")
+    [void]$sb.Append("<div class='res'><b>Result: $risk</b> &mdash; $verdict<br>$($issues.Count) issue$(if ($issues.Count -ne 1) { 's' }) found &middot; <b>$nFixed fixed</b> &middot; $nOpen still open &middot; 14 checks run</div>")
+    [void]$sb.Append('<h3>Findings</h3>')
+    if ($issues.Count) {
+        [void]$sb.Append("<table class='pt'><tr><th style='width:58px'>Level</th><th>What was found</th><th style='width:42%'>Result</th></tr>")
+        foreach ($f in $issues) {
+            $res = switch ($f.Status) {
+                'Fixed'   { "<span class='ok'>&#10003; Fixed</span> &mdash; $(Esc (Get-ShortResult $f.Result))" }
+                'Partial' { "<span class='ok'>Partly fixed</span> &mdash; $(Esc (Get-ShortResult $f.Result))" }
+                'Failed'  { "<b>NOT FIXED</b> &mdash; $(Esc (Get-ShortResult $f.Result))" }
+                default   { '<b>Not fixed</b> &mdash; review with technician' }
+            }
+            [void]$sb.Append("<tr><td><span class='lv $($f.Severity)'>$($f.Severity)</span></td><td>$(Esc $f.Title)</td><td>$res</td></tr>")
+        }
+        [void]$sb.Append('</table>')
+    } else { [void]$sb.Append('<div>No issues found.</div>') }
+    if ($info.Count) { [void]$sb.Append("<div class='ref'><b>For reference (not a problem):</b> $(Esc (($info | ForEach-Object { $_.Title }) -join '; ')).</div>") }
+    [void]$sb.Append("<h3>What was checked</h3><div class='chk'>")
+    foreach ($r in $script:ScanResults) {
+        [void]$sb.Append("<div>&#10003; $(Esc $r.Name)$(if ($r.Error) { ' (error)' })</div>")
+    }
+    [void]$sb.Append('</div>')
+    [void]$sb.Append("<div class='pf'>Removed files are kept in quarantine (not deleted) and registry changes were backed up first: C:\ProgramData\NerdyNeighbor\RemoteAccessAudit. Run by $(Esc $RunBy) &middot; Remote Access Audit v$RAA_Version</div></div></body></html>")
+
+    $base = if ($BaseName) { $BaseName } else { Join-Path $OutDir "RemoteAccessAudit_$($Computer)_$RunStamp" }
     [IO.File]::WriteAllText("$base.html", $sb.ToString(), (New-Object System.Text.UTF8Encoding($false)))
     $json = [pscustomobject]@{
-        Computer = $env:COMPUTERNAME; Windows = $osName; Version = $RAA_Version; Scanned = (Get-Date -Format 's'); Risk = $risk
+        Computer = $Computer; Windows = $osName; Version = $RAA_Version; Scanned = $ScanTime; Risk = $risk
         Findings = @($script:Findings | ForEach-Object { [pscustomobject]@{ Severity = $_.Severity; Category = $_.Category; Title = $_.Title; Detail = $_.Detail; Evidence = $_.Evidence; Status = $_.Status; Result = $_.Result; Fixes = @($_.Actions | ForEach-Object { $_.Label }) } })
         Actions = @($script:ActionLog); Coverage = @($script:ScanResults)
     }
