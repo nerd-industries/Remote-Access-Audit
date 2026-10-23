@@ -32,7 +32,7 @@ try {
         [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 } catch {}
 
-$RAA_Version = '3.0.1'
+$RAA_Version = '3.0.2'
 $RAA_Source  = 'https://api.github.com/repos/nerd-industries/Remote-Access-Audit/contents/RemoteAccessAudit.ps1'
 
 function Test-IsAdmin {
@@ -384,14 +384,42 @@ function Test-OwnRustDesk {
     return $false
 }
 
+# Nerdy Neighbor's own remote-support tunnel (irm remote.nerdyneighbor.net/<code>):
+# cloudflared in Program Files\NerdyNeighbor\Remote running a tunnel token issued
+# by our Cloudflare account. Trusted only when EVERY cloudflared on the PC is that
+# one, so a second (scammer) tunnel keeps all of them HIGH.
+$OwnCloudflaredExe     = Join-Path $env:ProgramFiles 'NerdyNeighbor\Remote\cloudflared.exe'
+$OwnCloudflareAccount  = '5a8cb75ac48acdba3ef566e7d68afa5d'
+$OwnCloudflared = $null
+function Reset-OwnCloudflared { $script:OwnCloudflared = $null }
+function Test-OwnCloudflared {
+    if ($null -ne $script:OwnCloudflared) { return $script:OwnCloudflared }
+    $script:OwnCloudflared = $false
+    $svcs  = @(Get-WmiObject Win32_Service -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'cloudflared*' -or $_.PathName -match '(?i)cloudflared' })
+    $procs = @(Get-WmiObject Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'cloudflared*' })
+    if ($svcs.Count -ne 1) { return $false }
+    if ((Get-ExeFromCommand $svcs[0].PathName) -ne $OwnCloudflaredExe) { return $false }
+    foreach ($p in $procs) { if ($p.ExecutablePath -and $p.ExecutablePath -ne $OwnCloudflaredExe) { return $false } }
+    if ($svcs[0].PathName -notmatch '--token-file\s+"?([^"]+?)"?\s*$') { return $false }
+    try {
+        $tok = ([IO.File]::ReadAllText($matches[1])).Trim()
+        $tok = $tok.PadRight($tok.Length + (4 - $tok.Length % 4) % 4, '=')
+        $acct = ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($tok)) | ConvertFrom-Json).a
+    } catch { return $false }
+    $script:OwnCloudflared = ($acct -eq $OwnCloudflareAccount)
+    return $script:OwnCloudflared
+}
+
 function Test-TrustedTool([string]$Name) {
     foreach ($t in $TrustList) { if ($Name -like "*$t*") { return $true } }
     if ($Name -like 'RustDesk*' -and (Test-OwnRustDesk)) { return $true }
+    if ($Name -like 'Cloudflared*' -and (Test-OwnCloudflared)) { return $true }
     return $false
 }
 
 function Get-TrustReason([string]$Name) {
     if ($Name -like 'RustDesk*' -and (Test-OwnRustDesk)) { return "RustDesk is configured for Nerdy Neighbor's RustDesk server ($OwnRustDeskHost)." }
+    if ($Name -like 'Cloudflared*' -and (Test-OwnCloudflared)) { return "This is the Nerdy Neighbor remote-support tunnel (Nerdy Neighbor's Cloudflare account). Customer ends it with: irm https://remote.nerdyneighbor.net/end | iex" }
     return "$Name is in your trusted list (NN_AUDIT_TRUST)."
 }
 
@@ -936,6 +964,13 @@ function Scan-ScheduledTasks {
         foreach ($a in @($x.Task.Actions.Exec)) {
             if (-not $a -or -not $a.Command) { continue }
             $cmd = [Environment]::ExpandEnvironmentVariables("$($a.Command)".Trim('"'))
+            # Bare names (e.g. "powershell.exe") resolve from System32, so check the real file
+            if ($cmd -and -not [IO.Path]::IsPathRooted($cmd) -and $cmd -notmatch '[\\/]') {
+                foreach ($c in (Join-Path "$env:windir\System32" $cmd), (Join-Path "$env:windir\System32\WindowsPowerShell\v1.0" $cmd)) {
+                    if (Test-Path -LiteralPath $c -PathType Leaf) { $cmd = $c; break }
+                    if (Test-Path -LiteralPath "$c.exe" -PathType Leaf) { $cmd = "$c.exe"; break }
+                }
+            }
             $taskArgs = "$($a.Arguments)"
             $full = "$cmd $taskArgs"
             $trust = Get-FileTrust $cmd
@@ -950,10 +985,14 @@ function Scan-ScheduledTasks {
             if ($tool -or $kw) {
                 $name = if ($tool) { $tool.Name } else { $kw }
                 $sev = if ($tool) { Get-ToolSeverity $tool $user $trust.Signed } else { 'HIGH' }
+                # A keyword-only hit (e.g. powershell running RustDesk\Watchdog.ps1) for a trusted tool is
+                # INFO when everything it runs lives under Program Files (admin-only).
+                if (-not $tool -and (Test-TrustedTool $kw) -and $trust.IsMicrosoft -and -not $susp -and -not (Test-UserWritablePath $cmd) -and
+                    ($taskArgs -match [regex]::Escape($env:ProgramFiles + '\')) -and ($taskArgs -notmatch '(?i)\\(AppData|Temp|Users\\Public|ProgramData)\\')) { $sev = 'INFO' }
                 if (-not $enabled -and $sev -eq 'HIGH') { $sev = 'MEDIUM' }
                 if ($user -and -not $trust.Signed -and $sev -ne 'INFO') { $acts += Act-Quarantine $cmd 'Delete task + quarantine program' }
                 Add-Finding -Category 'Scheduled tasks' -Severity $sev -Title "Task launches remote-access software ($name): $taskPath" `
-                    -Detail 'A scheduled task restarts the tool automatically (at logon, on a timer, or when removed).' -Evidence $ev -Actions $acts -Key "task|$taskPath"
+                    -Detail $(if ($sev -eq 'INFO') { "Expected: $(Get-TrustReason $name)" } else { 'A scheduled task restarts the tool automatically (at logon, on a timer, or when removed).' }) -Evidence $ev -Actions $acts -Key "task|$taskPath"
             } elseif ($susp) {
                 Add-Finding -Category 'Scheduled tasks' -Severity 'HIGH' -Title "Task runs a download/encoded command: $taskPath" `
                     -Detail 'The task runs PowerShell/mshta/certutil/rundll32 with a download or encoded payload. This is how fileless malware re-infects a PC.' -Evidence $ev -Actions $acts -Key "task|$taskPath"
@@ -1531,6 +1570,7 @@ function Invoke-AllScans {
     $script:ScanTime = Get-Date -Format 'yyyy-MM-dd HH:mm'
     $script:TrustCache = @{}   # files may have been quarantined/replaced since the last pass
     Reset-OwnRustDesk
+    Reset-OwnCloudflared
     Update-ProcessTable
     $i = 0
     foreach ($s in $ScanDefs) {
