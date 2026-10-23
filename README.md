@@ -62,6 +62,25 @@ No option needed.
 - Every action is logged to `C:\ProgramData\NerdyNeighbor\audit.log` and listed in
   the report.
 
+## The report
+
+Closing the window saves an HTML + JSON report to the Desktop and opens it. On
+screen it shows every finding with full details. **Printing it** (or its
+**Print (1 page)** button) gives a one-page, black-and-white **customer report** in
+the same style as our phone cleanup report: logo header, result box, what was found
+and fixed, what was checked, safety tips and our address. Low-risk items that repeat
+(for example 20 unsigned helper programs) are collapsed into one row, and the font
+shrinks to fit, so it is always exactly one page.
+
+## White label for other shops
+
+Other repair shops can host this audit under their own name at
+`audit.theirshop.com` with [audit-whitelabel](https://github.com/nerd-industries/audit-whitelabel).
+Their site puts a `$RAA_Brand` block (name, tagline, address, phone, website, logo)
+in front of this script; the window, report and data folder use their branding,
+nothing is trusted by default, and Nerdy Neighbor's RustDesk is not trusted. Without
+a `$RAA_Brand` block (this site) nothing changes.
+
 ## What it checks
 
 | Scan | What it looks for |
@@ -73,7 +92,7 @@ No option needed.
 | Scheduled tasks | read straight from the task XML files: remote tools, encoded/download commands, unsigned programs in user folders, random/hidden tasks |
 | Startup registry + backdoors | Run/RunOnce for every loaded user; Winlogon Shell/Userinit; AppInit_DLLs; IFEO debugger hijacks; Sticky-Keys/Utilman replaced with `cmd.exe`; non-Microsoft LSA packages (ScreenConnect's locked DLL) |
 | Startup folders | all users: scripts, remote tools, unsigned programs |
-| Remote tool folders | TeamViewer, AnyDesk, VNC, ScreenConnect, ... for every profile; ScreenConnect **full removal** (service + uninstaller + LSA package + folders + keys) |
+| Remote tool folders | TeamViewer, AnyDesk, VNC, ScreenConnect, ... for every profile; ScreenConnect **full removal**, one card per instance (`ScreenConnect Client (<id>)`), found from its service, Programs and Features entry, Program Files folder, sign-in screen hook or `sc-<id>` link handler, so half-removed copies are caught too. Removal covers the uninstaller, service, LSA package, sign-in screen credential provider, link handler, a broken Windows Installer registration (uninstaller error 1612), folders and keys |
 | User folders (deep scan) | AppData/Temp/Public/ProgramData/Downloads, **junction-safe**: hidden remote tools, downloaded remote-tool installers, adware-style installers, fake system files, unsigned programs buried deep |
 | Antivirus + exclusions | no AV / AV off / out of date (Security Center), Defender policy kill-switches, Defender **and Security Essentials** exclusions |
 | WMI persistence | event subscriptions that run commands |

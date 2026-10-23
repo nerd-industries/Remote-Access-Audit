@@ -20,7 +20,8 @@
 #    - Self-elevates (one UAC prompt), runs every scan, opens the remediation
 #      window. Every Fix button runs real code in-process and shows the result
 #      on the finding. Files are QUARANTINED (not deleted) and registry values
-#      are backed up first, under C:\ProgramData\NerdyNeighbor\RemoteAccessAudit.
+#      are backed up first, under C:\ProgramData\NerdyNeighbor\RemoteAccessAudit
+#      (a white-labeled shop audit uses its own folder name).
 #    - Saves an HTML + JSON report when the window closes.
 #    - Works on Windows 7 SP1 (WMF 5.1), 8.1, 10 and 11. Every scan has a
 #      Windows 7 code path; anything that could not be checked is listed in the
@@ -32,8 +33,29 @@ try {
         [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 } catch {}
 
-$RAA_Version = '3.0.0'
+$RAA_Version = '3.1.0'
 $RAA_Source  = 'https://api.github.com/repos/nerd-industries/Remote-Access-Audit/contents/RemoteAccessAudit.ps1'
+
+# ---------------------------------------------------------------------------
+#  Branding. A shop's own audit site (github.com/nerd-industries/audit-whitelabel)
+#  puts a $RAA_Brand block in front of this script. Without one it is Nerdy
+#  Neighbor's audit. Keys: Name, Tagline, Address, Phone, Website, Logo (data URI),
+#  Url (the shop's audit address, used to re-launch elevated), Folder (under
+#  ProgramData), Trust (default trusted tools), OwnRustDesk (trust RustDesk set up
+#  for Nerdy Neighbor's server).
+# ---------------------------------------------------------------------------
+$RAA_Default = @{
+    Name = 'Nerdy Neighbor'; Tagline = 'Computer & Device Services'; Address = '202 W Gurley St, Prescott, AZ 86301'
+    Phone = '(928) 735-4144'; Website = 'nerdyneighbor.net'; Logo = ''; Url = ''; Folder = 'NerdyNeighbor'
+    Trust = 'SuperOps,OpenSSH'; OwnRustDesk = $true
+}
+if ($RAA_Brand -is [hashtable] -and $RAA_Brand.Name) {
+    foreach ($k in 'Tagline', 'Address', 'Phone', 'Website', 'Logo', 'Url') { if ($null -eq $RAA_Brand[$k]) { $RAA_Brand[$k] = '' } }
+    if (-not $RAA_Brand.Folder) { $RAA_Brand.Folder = ($RAA_Brand.Name -replace '[^A-Za-z0-9]', '') }
+    if (-not $RAA_Brand.Folder) { $RAA_Brand.Folder = 'RemoteAccessAudit' }
+    if ($null -eq $RAA_Brand.Trust) { $RAA_Brand.Trust = '' }
+    $RAA_Brand.OwnRustDesk = $false
+} else { $RAA_Brand = $RAA_Default }
 
 function Test-IsAdmin {
     try {
@@ -48,7 +70,7 @@ function Test-IsAdmin {
 $Mode = if ($env:NN_AUDIT_MODE) { $env:NN_AUDIT_MODE.Trim().ToLower() } else { 'gui' }
 $TrustList = if ($null -ne $env:NN_AUDIT_TRUST) {
     @($env:NN_AUDIT_TRUST -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-} else { @('SuperOps', 'OpenSSH') }
+} else { @($RAA_Brand.Trust -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
 
 # ---------------------------------------------------------------------------
 #  Self-elevation. Under irm | iex there is no file on disk, so relaunch the
@@ -69,6 +91,10 @@ if ($Mode -ne 'lib' -and -not (Test-IsAdmin)) {
     $selfFile = $MyInvocation.MyCommand.Path
     if ($selfFile -and (Test-Path -LiteralPath $selfFile)) {
         $relaunch = "$pre& $(& $q $selfFile)"
+    } elseif ($RAA_Brand.Url) {
+        # A shop's audit: re-launch from the shop's own site so the branding comes along
+        $relaunch = "[Net.ServicePointManager]::SecurityProtocol=[Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; " +
+                    "$pre irm $(& $q $RAA_Brand.Url) | iex"
     } else {
         $relaunch = "[Net.ServicePointManager]::SecurityProtocol=[Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; " +
                     "$pre irm -Headers @{Accept='application/vnd.github.raw'} '$RAA_Source' | iex"
@@ -92,10 +118,11 @@ if ($PSVersionTable.PSVersion.Major -lt 3) {
 # ---------------------------------------------------------------------------
 $ProgressPreference = 'SilentlyContinue'
 $RunStamp      = Get-Date -Format 'yyyy-MM-dd_HH-mm-ss'
-$DataDir       = Join-Path $env:ProgramData 'NerdyNeighbor\RemoteAccessAudit'
+$DataRoot      = Join-Path $env:ProgramData $RAA_Brand.Folder
+$DataDir       = Join-Path $DataRoot 'RemoteAccessAudit'
 $BackupDir     = Join-Path $DataDir "backup\$RunStamp"
 $QuarantineDir = Join-Path $DataDir "quarantine\$RunStamp"
-$LogFile       = Join-Path $env:ProgramData 'NerdyNeighbor\audit.log'
+$LogFile       = Join-Path $DataRoot 'audit.log'
 $OutDir = if ($env:NN_AUDIT_OUT) { $env:NN_AUDIT_OUT }
           elseif ($Mode -eq 'report') { $DataDir }
           else { [Environment]::GetFolderPath('Desktop') }
@@ -386,12 +413,12 @@ function Test-OwnRustDesk {
 
 function Test-TrustedTool([string]$Name) {
     foreach ($t in $TrustList) { if ($Name -like "*$t*") { return $true } }
-    if ($Name -like 'RustDesk*' -and (Test-OwnRustDesk)) { return $true }
+    if ($RAA_Brand.OwnRustDesk -and $Name -like 'RustDesk*' -and (Test-OwnRustDesk)) { return $true }
     return $false
 }
 
 function Get-TrustReason([string]$Name) {
-    if ($Name -like 'RustDesk*' -and (Test-OwnRustDesk)) { return "RustDesk is configured for Nerdy Neighbor's RustDesk server ($OwnRustDeskHost)." }
+    if ($RAA_Brand.OwnRustDesk -and $Name -like 'RustDesk*' -and (Test-OwnRustDesk)) { return "RustDesk is configured for Nerdy Neighbor's RustDesk server ($OwnRustDeskHost)." }
     return "$Name is in your trusted list (NN_AUDIT_TRUST)."
 }
 
@@ -574,11 +601,11 @@ function Invoke-Quarantine {
         $err = $_.Exception.Message
         $sched = 0
         if (Test-Path -LiteralPath $Path -PathType Leaf) {
-            if ([NNAudit.Native]::MoveFileEx($Path, $null, 4)) { $sched = 1 }
+            if ([NNAudit.Native]::MoveFileEx($Path, [NullString]::Value, 4)) { $sched = 1 }
         } else {
-            Get-ChildItem -LiteralPath $Path -Recurse -Force -File -ErrorAction SilentlyContinue | ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue; if (Test-Path -LiteralPath $_.FullName) { if ([NNAudit.Native]::MoveFileEx($_.FullName, $null, 4)) { $sched++ } } }
+            Get-ChildItem -LiteralPath $Path -Recurse -Force -File -ErrorAction SilentlyContinue | ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue; if (Test-Path -LiteralPath $_.FullName) { if ([NNAudit.Native]::MoveFileEx($_.FullName, [NullString]::Value, 4)) { $sched++ } } }
             Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue
-            if (Test-Path -LiteralPath $Path) { [void][NNAudit.Native]::MoveFileEx($Path, $null, 4) }
+            if (Test-Path -LiteralPath $Path) { [void][NNAudit.Native]::MoveFileEx($Path, [NullString]::Value, 4) }
         }
         if (-not (Test-Path -LiteralPath $Path)) { return "Deleted $Path (could not move to quarantine: $err)" }
         if ($sched) { return "PARTIAL: $Path is locked; $sched file(s) will be deleted at the next reboot" }
@@ -841,6 +868,7 @@ function Scan-InstalledPrograms {
     foreach ($e in (Get-UninstallEntries)) {
         $tool = Find-RemoteToolByProduct $e.Name $e.Publisher
         if (-not $tool) { continue }
+        if ($tool.Name -like 'ScreenConnect*' -and -not (Test-TrustedTool $tool.Name)) { continue }   # Scan-RemoteToolFiles does the full removal
         $sev = Get-ToolSeverity $tool $false $true
         $ev = [ordered]@{ 'Program' = $e.Name; 'Publisher' = $e.Publisher; 'Version' = $e.Version; 'Installed' = $e.InstallDate; 'Location' = $e.InstallLocation; 'Uninstall command' = $(if ($e.Quiet) { $e.Quiet } else { $e.Uninstall }); 'Registry' = $e.Key }
         $acts = @()
@@ -1140,6 +1168,109 @@ function Scan-StartupFolders {
     }
 }
 
+# ScreenConnect installs one "ScreenConnect Client (<16-hex id>)" per scammer server. Each instance
+# leaves a service, an MSI registration, a folder, a sign-in screen credential provider, an LSA
+# package and an sc-<id> link handler. Uninstallers often fail (the cached MSI is gone: error 1612),
+# so a half-removed instance with no service is common. Collect instances from every trace.
+function ConvertTo-SquishedGuid([string]$Guid) {
+    $h = $Guid.Trim('{}') -replace '-', ''
+    if ($h.Length -ne 32) { return '' }
+    $rev = { param($s) -join ($s.ToCharArray()[($s.Length - 1)..0]) }
+    $r = (& $rev $h.Substring(0, 8)) + (& $rev $h.Substring(8, 4)) + (& $rev $h.Substring(12, 4))
+    for ($i = 16; $i -lt 32; $i += 2) { $r += $h[$i + 1]; $r += $h[$i] }
+    return $r.ToUpper()
+}
+
+function Get-ScreenConnectCredProviders {
+    $cp = 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\Credential Providers'
+    foreach ($k in (Get-ChildItem -LiteralPath "Registry::$cp" -ErrorAction SilentlyContinue)) {
+        $clsid = $k.PSChildName
+        $dll = (Get-ItemProperty -LiteralPath "Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Classes\CLSID\$clsid\InprocServer32" -ErrorAction SilentlyContinue).'(default)'
+        $name = (Get-ItemProperty -LiteralPath $k.PSPath -ErrorAction SilentlyContinue).'(default)'
+        if ("$dll $name" -match '(?i)screenconnect|connectwise') { [pscustomobject]@{ Clsid = $clsid; Key = "$cp\$clsid"; Dll = $dll; Name = $name } }
+    }
+}
+
+function Get-ScreenConnectInstances {
+    $list = [ordered]@{}
+    $add = {
+        param($id, $field, $value)
+        if (-not $list.Contains($id)) { $list[$id] = @{ Id = $id; Services = @(); Dirs = @(); Apps = @(); CredProviders = @() } }
+        $list[$id][$field] += $value
+    }
+    $idOf = { param($s) if ("$s" -match '(?i)ScreenConnect Client \(([0-9a-f]{16})\)') { $matches[1].ToLower() } else { '' } }
+    foreach ($svc in (Get-WmiObject Win32_Service -ErrorAction SilentlyContinue | Where-Object { $_.Name -like '*ScreenConnect*' -or $_.DisplayName -like '*ScreenConnect*' -or $_.Name -like '*ConnectWise*' })) {
+        $id = & $idOf "$($svc.Name) $($svc.PathName)"; & $add $id 'Services' $svc
+    }
+    foreach ($e in (Get-UninstallEntries | Where-Object { $_.Name -match '(?i)ScreenConnect|ConnectWise Control' })) { & $add (& $idOf $e.Name) 'Apps' $e }
+    foreach ($b in (@($env:ProgramFiles, ${env:ProgramFiles(x86)}) | Where-Object { $_ } | Sort-Object -Unique)) {
+        foreach ($d in (Get-ChildItem -LiteralPath $b -Directory -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'ScreenConnect Client*' -or $_.Name -like 'ConnectWise Control*' })) { & $add (& $idOf $d.Name) 'Dirs' $d.FullName }
+    }
+    foreach ($c in (Get-ScreenConnectCredProviders)) { & $add (& $idOf "$($c.Dll) $($c.Name)") 'CredProviders' $c }
+    foreach ($k in (Get-ChildItem -LiteralPath 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Classes' -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -match '^sc-([0-9a-f]{16})$' })) {
+        $id = $k.PSChildName.Substring(3).ToLower(); if (-not $list.Contains($id)) { & $add $id 'Dirs' @() }
+    }
+    foreach ($i in $list.Values) {
+        foreach ($s in $i.Services) { $bin = Get-ExeFromCommand $s.PathName; if ($bin) { $i.Dirs += (Split-Path $bin -Parent) } }
+        $i.Dirs = @($i.Dirs | Where-Object { $_ } | Sort-Object -Unique)
+        $i
+    }
+}
+
+function Remove-ScreenConnectInstance([hashtable]$D) {
+    $r = New-Object System.Collections.ArrayList
+    $id = $D.Id
+    $mine = { param($s) if ($id) { "$s" -match ('(?i)ScreenConnect Client \(' + $id + '\)') } else { "$s" -match '(?i)screenconnect|connectwise' } }
+    # 1. The uninstaller (works when its cached MSI still exists)
+    foreach ($e in (Get-UninstallEntries | Where-Object { & $mine $_.Name })) {
+        try { [void]$r.Add((Invoke-Uninstaller @{ Name = $e.Name; Key = $e.Key; MsiCode = $e.MsiCode; Quiet = $e.Quiet; Uninstall = $e.Uninstall })) } catch { [void]$r.Add("Uninstaller failed: $($_.Exception.Message)") }
+    }
+    # 2. Service
+    foreach ($s in @($D.Services)) { if ($s -and (Get-Service -Name $s -ErrorAction SilentlyContinue)) { [void]$r.Add((Remove-ServiceSafe -Name $s)) } }
+    # 3. LSA packages (lsass keeps the DLL locked until they are gone and the PC reboots)
+    $lsa = 'HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Lsa'
+    Backup-RegKey $lsa
+    foreach ($vn in 'Security Packages', 'Authentication Packages') {
+        $cur = @((Get-ItemProperty -LiteralPath "Registry::$lsa" -ErrorAction SilentlyContinue).$vn)
+        $new = @($cur | Where-Object { -not (& $mine $_) })
+        if ($new.Count -ne $cur.Count) { Set-ItemProperty -LiteralPath "Registry::$lsa" -Name $vn -Value ([string[]]$new) -Type MultiString; [void]$r.Add("Removed ScreenConnect from LSA $vn") }
+    }
+    # 4. Sign-in screen credential provider and its COM registration
+    foreach ($c in (Get-ScreenConnectCredProviders | Where-Object { & $mine "$($_.Dll) $($_.Name)" })) {
+        [void]$r.Add((Remove-RegKeySafe $c.Key))
+        foreach ($k in "HKEY_LOCAL_MACHINE\SOFTWARE\Classes\CLSID\$($c.Clsid)", "HKEY_LOCAL_MACHINE\SOFTWARE\Classes\WOW6432Node\CLSID\$($c.Clsid)") { if (Test-Path -LiteralPath "Registry::$k") { [void]$r.Add((Remove-RegKeySafe $k)) } }
+    }
+    # 5. sc-<id> link handler (lets a web page start this instance)
+    if ($id) { $k = "HKEY_LOCAL_MACHINE\SOFTWARE\Classes\sc-$id"; if (Test-Path -LiteralPath "Registry::$k") { [void]$r.Add((Remove-RegKeySafe $k)) } }
+    # 6. Orphaned MSI registration (uninstaller failed, e.g. error 1612 "source not available")
+    foreach ($e in (Get-UninstallEntries | Where-Object { (& $mine $_.Name) -and $_.MsiCode })) {
+        $sq = ConvertTo-SquishedGuid $e.MsiCode
+        if (-not $sq) { continue }
+        foreach ($k in $e.Key, "HKEY_LOCAL_MACHINE\SOFTWARE\Classes\Installer\Products\$sq", "HKEY_LOCAL_MACHINE\SOFTWARE\Classes\Installer\Features\$sq",
+                       "HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Products\$sq") {
+            if (Test-Path -LiteralPath "Registry::$k") { [void](Remove-RegKeySafe $k) }
+        }
+        $n = 0
+        foreach ($root in 'HKEY_LOCAL_MACHINE\SOFTWARE\Classes\Installer\UpgradeCodes', 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Components') {
+            foreach ($k in (Get-ChildItem -LiteralPath "Registry::$root" -ErrorAction SilentlyContinue)) {
+                if ($k.GetValueNames() -notcontains $sq) { continue }
+                $native = "$root\$($k.PSChildName)"
+                Backup-RegKey $native
+                Remove-ItemProperty -LiteralPath $k.PSPath -Name $sq -Force -ErrorAction SilentlyContinue; $n++
+                $left = Get-Item -LiteralPath $k.PSPath -ErrorAction SilentlyContinue
+                if ($left -and $left.ValueCount -eq 0 -and $left.SubKeyCount -eq 0) { Remove-Item -LiteralPath $k.PSPath -Force -ErrorAction SilentlyContinue }
+            }
+        }
+        [void]$r.Add("Removed the broken Windows Installer registration of $($e.Name) ($n component references; backup in $BackupDir)")
+    }
+    # 7. Folders (quarantined; locked files are deleted at reboot) and settings keys
+    $paths = @($D.Dirs) + @(Get-UserProfiles | ForEach-Object { Join-Path $_.Path 'AppData\Local\ScreenConnect'; Join-Path $_.Path 'AppData\Roaming\ScreenConnect' })
+    foreach ($p in ($paths | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Sort-Object -Unique)) { try { [void]$r.Add((Invoke-Quarantine $p)) } catch { [void]$r.Add($_.Exception.Message) } }
+    foreach ($k in 'HKEY_LOCAL_MACHINE\SOFTWARE\ScreenConnect', 'HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\ScreenConnect') { if (Test-Path -LiteralPath "Registry::$k") { [void]$r.Add((Remove-RegKeySafe $k)) } }
+    [void]$r.Add('Reboot the PC to finish (unloads the ScreenConnect DLL from lsass).')
+    return ($r -join ' | ')
+}
+
 function Scan-RemoteToolFiles {
     # Known install folders (for every user profile), incl. portable ScreenConnect
     $folders = @()
@@ -1183,34 +1314,24 @@ function Scan-RemoteToolFiles {
                 })
     }
 
-    # ScreenConnect full removal (service + uninstaller + LSA package + folders)
-    foreach ($svc in (Get-WmiObject Win32_Service -ErrorAction SilentlyContinue | Where-Object { $_.Name -like '*ScreenConnect*' -or $_.DisplayName -like '*ScreenConnect*' -or $_.Name -like '*ConnectWise*' })) {
+    # ScreenConnect full removal, one card per instance (service, uninstaller, LSA package,
+    # sign-in credential provider, link handler, broken MSI registration, folders)
+    foreach ($i in (Get-ScreenConnectInstances)) {
         if (Test-TrustedTool 'ScreenConnect / ConnectWise') { continue }
-        $bin = Get-ExeFromCommand $svc.PathName
-        $dir = if ($bin) { Split-Path $bin -Parent } else { '' }
-        $idMatch = if ($svc.Name -match '\(([0-9a-f]{16})\)') { $matches[1] } else { '' }
-        Add-Finding -Category 'Remote access software' -Severity 'HIGH' -Title "ScreenConnect client: $($svc.DisplayName) [$($svc.State)]" `
-            -Detail 'ScreenConnect (ConnectWise Control) is the most common tool in tech-support scams. "Full removal" stops the service, runs its uninstaller, removes its LSA package (the reason its folder is always locked), quarantines its folders and removes its registry keys. Reboot afterwards.' `
-            -Evidence ([ordered]@{ 'Service' = $svc.Name; 'State' = $svc.State; 'Program' = $bin; 'Instance id' = $idMatch }) -Key "sc|$($svc.Name)" -Actions @(
-                New-FixAction -Label 'Full removal' -Description "Stops + deletes service '$($svc.Name)', runs the ScreenConnect uninstaller silently, removes ScreenConnect LSA packages, quarantines $dir and ScreenConnect AppData folders, removes HKLM\SOFTWARE\ScreenConnect. Reboot afterwards." -Data @{ Service = $svc.Name; Dir = $dir } -Script {
-                    param($D)
-                    $r = New-Object System.Collections.ArrayList
-                    foreach ($e in (Get-UninstallEntries | Where-Object { $_.Name -match 'ScreenConnect|ConnectWise Control' })) {
-                        try { [void]$r.Add((Invoke-Uninstaller @{ Name = $e.Name; Key = $e.Key; MsiCode = $e.MsiCode; Quiet = $e.Quiet; Uninstall = $e.Uninstall })) } catch { [void]$r.Add("Uninstaller: $($_.Exception.Message)") }
-                    }
-                    if (Get-Service -Name $D.Service -ErrorAction SilentlyContinue) { [void]$r.Add((Remove-ServiceSafe -Name $D.Service)) }
-                    $lsa = 'HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Lsa'
-                    Backup-RegKey $lsa
-                    foreach ($vn in 'Security Packages', 'Authentication Packages') {
-                        $cur = @((Get-ItemProperty -LiteralPath "Registry::$lsa" -ErrorAction SilentlyContinue).$vn)
-                        $new = @($cur | Where-Object { "$_" -notmatch 'ScreenConnect|ConnectWise' })
-                        if ($new.Count -ne $cur.Count) { Set-ItemProperty -LiteralPath "Registry::$lsa" -Name $vn -Value ([string[]]$new) -Type MultiString; [void]$r.Add("Removed ScreenConnect from LSA $vn") }
-                    }
-                    $paths = @($D.Dir) + @(Get-UserProfiles | ForEach-Object { Join-Path $_.Path 'AppData\Local\ScreenConnect'; Join-Path $_.Path 'AppData\Roaming\ScreenConnect' })
-                    foreach ($p in ($paths | Where-Object { $_ -and (Test-Path -LiteralPath $_) })) { try { [void]$r.Add((Invoke-Quarantine $p)) } catch { [void]$r.Add($_.Exception.Message) } }
-                    foreach ($k in 'HKEY_LOCAL_MACHINE\SOFTWARE\ScreenConnect', 'HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\ScreenConnect') { if (Test-Path -LiteralPath "Registry::$k") { [void]$r.Add((Remove-RegKeySafe $k)) } }
-                    [void]$r.Add('Reboot the PC to finish (unloads the ScreenConnect DLL from lsass).')
-                    $r -join ' | '
+        $svcNames = @($i.Services | ForEach-Object { $_.Name })
+        $state = if ($i.Services.Count) { ($i.Services | ForEach-Object { $_.State } | Sort-Object -Unique) -join '/' } else { 'no service' }
+        $label = if ($i.Id) { "ScreenConnect Client ($($i.Id))" } else { 'ScreenConnect / ConnectWise Control' }
+        $ev = [ordered]@{ 'Instance id' = $i.Id; 'Service' = ($svcNames -join ', '); 'State' = $state; 'Folder' = ($i.Dirs -join '; ') }
+        if ($i.Apps.Count) { $ev['Installed'] = ($i.Apps | ForEach-Object { "$($_.Name) $($_.Version) on $($_.InstallDate)" }) -join '; ' }
+        if ($i.CredProviders.Count) { $ev['Sign-in screen hook'] = ($i.CredProviders | ForEach-Object { $_.Dll }) -join '; ' }
+        $relay = @($i.Services | ForEach-Object { if ($_.PathName -match '[?&]h=([^&"]+)') { $matches[1] } }) | Sort-Object -Unique
+        if ($relay) { $ev['Connects to'] = $relay -join ', ' }
+        $title = if ($i.Services.Count) { "ScreenConnect client: $label [$state]" } else { "ScreenConnect leftovers: $label (not fully removed)" }
+        Add-Finding -Category 'Remote access software' -Severity 'HIGH' -Title $title `
+            -Detail 'ScreenConnect (ConnectWise Control) is the most common tool in tech-support scams. Its uninstaller often fails or leaves pieces behind, including a hook on the Windows sign-in screen. "Full removal" removes every piece of this instance and keeps backups. Reboot afterwards.' `
+            -Evidence $ev -Key "sc|$($i.Id)" -Actions @(
+                New-FixAction -Label 'Full removal' -Description "Runs the ScreenConnect uninstaller silently, removes the service, LSA package, sign-in screen credential provider, sc-$($i.Id) link handler and any broken Windows Installer registration, quarantines $($i.Dirs -join '; ') and ScreenConnect AppData folders. Registry keys are backed up first. Reboot afterwards." -Data @{ Id = $i.Id; Services = $svcNames; Dirs = $i.Dirs } -Script {
+                    param($D) Remove-ScreenConnectInstance $D
                 })
     }
 }
@@ -1573,12 +1694,15 @@ function Invoke-FindingAction {
 # ---------------------------------------------------------------------------
 #  Report (HTML + JSON)
 # ---------------------------------------------------------------------------
+# Nerdy Neighbor logo for the printed report (a shop's audit brings its own in $RAA_Brand.Logo)
+$RAA_NNLogo = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAPAAAADwCAYAAAA+VemSAAAo5UlEQVR42u2de1hVVfrHv/tyLhxABBRMVLKUFEnNVEBF81bieMnGijSfxlFTJ5OyzOaXWeMtqbALPTVWjmVmY6ZOZaMpollaYnlPSK00EwRBucO57L1+fzRrPWdzDnAw04O+n+fZj8i+rb3Z37Xetda73ldijDEQBNEkkekVEAQJmCAIEjBBECRggiABEwRBAiYIggRMEAQJmCBIwARBkIAJgiABEwQJmCAIEjBBECRggiBIwARBAiYIggRMEAQJmCAIEjBBkIAJgiABEwRBAiYIEjBBECRggiBIwARBkIAJggRMEAQJmCAIEjBBECRggiABEwRBAiYIggRMECRggiBIwARBkIAJgiABEwQJmCAIEjBBECRggiABEwRBAiYIggRMEAQJmCBIwARBkIAJgiABEwRBAiYIEjBBECRggiBIwARBAiYIggRMEAQJmCAIEjBBkIAJgiABEwRBAiYIggRMECRggiBIwARBkIAJggRMEAQJmCCIy4BKr6Bpo2kaGGN119CyDFmmevpqRWL1/fUJgqAWmLj06LoOWZbxxRdfYPv27ZAkydASS5IEABg2bBji4+PF8QS1wIQfwBiDJEmIjY1FTk5Oncf16dMHu3btgqZpUBSFXhy1wFenGPyuZv1fC9rQfpPJBFVVIcsydF0X+xVFMYi2oesRJOAmiT+3TL6YvYwxuFwuDwEzxhoc4CJIwE2+5eXidf/4/aVc1GclSMB1CETXdSiKgrlz52L9+vXQdR2MsSveYkmSBEmSYLPZMG/ePNx55500AEWQgGublqqq4rHHHsPSpUv9tqzTpk1DcnIyLBaLGLQiiGtawFy88+bNw9KlS2EymaBpml+VUVEUOJ1OtGrVCoqiNCheEjYJ+JrA6XTCZDIhLS0NCxYsgKqqcDqdflVGWZbhdDoREhKCd999F6qqQtd1D5FyUXPTn0zsaxP5WhNvRkYGnnzySaiq6nctr/vU0Pr169GtWzdomuZVnHzQbfHixT610gQJuMmL91//+hdmzpwp5kj9aYpFkiQxFbRq1SoMGjQILperzikuRVGg6zpGjRqFVatWiYEuEjEJ+KoU75o1azBp0iTx4fvb/CivVDIyMnDPPffA6XRCVdUGzW2Xy4WUlBSsWLFCtNYkYhLwVYHL5YLJZMKnn36K8ePHixbO38RrMpngcrnw9NNPY8aMGaLS8WkQ43/9+L/85S94/fXXhWMKiZgE3OTFq6oqtm3bhrvvvlv0Gf1RvE6nEw8++CDmz58vyn0x15g+fTrS09OFZxZBAm7S4t29ezdGjx4Nu90uRmz9Cd56jhkzBsuWLftdrSdvxWfNmoWFCxfC4XDQ4gUScNMV7/79+zFixAhUVlZ6+An7i3hdLheSkpLwwQcfXJJBKH7Np556Cs888ww0TRPXI5/oq5Orajkhb8FycnIwcOBAFBQUiMEhf4KXqUuXLti5cyfCwsIumbskdweVZRnvvfceOnXqhF69epE7Jgm4aYj3559/xoABA3D69Gm/Fm9UVBR27dqF6OjoP2RFFM0Lkwnd5MSbl5eHO+64w2/Fy035kJAQfPbZZ3+YeIHf5pVdLpffdR0IErABvqqoqKgIw4YNw/Hjx/3ay0pVVWzYsAHdunWr11HjUvWzyWy+ulGbunhlWUZZWRmGDx+Ow4cPi4EcfxOvLMvQNA0ffPABBg4ceFHTRQRx1bTA3MG/uroaI0eOxN69e/1SvO793sZ4Wf3R8MEuf3RsIa7yFph/cJqm4a677sLOnTv9Vry8XBfjZfVHVHrcauGmtfs0E3fFJLO76dDkRqF5yyFJEsaOHYv169f7rXjdvayWLVsm+ryXe3TYPQIJp6qqCqWlpWCMISgoCM2aNTMIHQAJmQT8x32IEyZMwKpVq4RI/LXlHTNmDNavX3/FFhq4j3Ln5ubio48+wrZt23D8+HGUlJSAMYbg4GBcf/31SEpKwtixYxEfH+9xLuG/omgS6LrOnE4nY4yxqVOnMgDMZDIxAH63qarKALCkpCRWU1PDNE1juq4bnkXTNOZyuZjL5fLYf6lwuVyMMcby8/PZ5MmTmcViMZRTkiQmSZJH+UeOHMkOHTpkuAbhn6CpiXfWrFl+LV5FURgA1qVLF1ZcXMwYY0zTNCGG+gTR0P7GwN9XVlYWi4qKEoI1m811lt1kMonKx2azseXLlxuuRfgfTcKE5lMu8+bNw4IFC/zWbK7Ly4pPI3EqKytx5swZnD9/HpIkITw8HG3atIHVajX0Qy+2D8pN382bN2P06NFwOBywWCyw2+0AgA4dOiAxMRE33ngjVFXF6dOnsWfPHhw4cAAAYDab4XA4AAAvvfQSHnnkETKnyYS+OBwOB2OMsSVLlhjMU3/bZFlmkiSxkJAQduDAAY8W1eVysbVr17I///nPrE2bNqKl5s8UHR3Nxo0bxzZu3OhhAjcGbo7/8MMPLDg4mAEQre5NN93EPvzwQ1ZdXe313O3bt7P+/ft7tMaffvopmdNkQl+8eDMyMsSH7q3PdqU3SZKYLMvMZDKxrKwsYXZy03nr1q2sR48eHqa2qqpMVVWDmHnf+ZtvvqlXNLX70e6bruusX79+BvEOHz6clZSUGCoHp9MpNvc+eGpqqhCxJEksMjKSFRcXM13X/5C+OnEVCpiLd/ny5eKD91fxcgGuWbNGlJ0Lb9GiReJYs9lc7zPwSoCL54033hCVga7rQnQNsWHDBoN4e/fuzex2u+FadfXBeaXzwAMPMABi4Ovpp5+m/jD1gRvXh1uzZg1SUlL8No6V+3RRRkaGcNSQZVlkfVi0aJFIk+J0OmG1WjF06FAkJSUhOjoaAPDTTz/hiy++QGZmJlwuF8xmM5xOJxhjeOWVVzBz5kyPPnFBQQHy8vJw/vx51NTUwGKxICQkBG3atMH48eOxY8cOKIoCRVGwb98+xMbG+uS+yeeAq6qq0LlzZ5w5cwYAcN111+H48eOw2Wy00on6wPX34RhjbOPGjUxRFNG39Md+L28t3Vsn3vK+//77Hn3Je++9l+Xm5tb57AcPHmQjRozwOC8zM5Ppus42bdrEZsyYwW655RbWrFkzr2UKDAxkkiSJc++7775Gt5z82LS0NENLnpmZSX1hMqHrny7SdZ2VlpayiIgIYVIqiuJ3G/+oH3zwQUOfV9d1VlBQwMLCwgwm8aJFi+rsf7oLnzHGnnjiCUMF0apVK9a1a1cP011VVWYymcTmPsDHzfr169cbpuEaMxCWk5Mj+uqSJLHFixeTGU0Crl/AjDFWUlLCmjdv7petrvs2ZswYIUh3kcyZM8fQf3z44Yc9BrYamgceP368QYhc0LUHvOrql/M+dU5OjsGyaczfoaqqirVu3Vpcd8qUKSRgP8OvFjPwwHMhISF4//33sXTpUtjtdr/IGsjh/dBu3bohPT3dkNZEVVVUVlZi5cqVkCQJDocD7du3x/PPP+9TwDre19d1HRkZGdiyZQuKiorE/CtfxZSQkICEhATExcWhdevWCAgIQHV1NQoLC7F69Wps3boVkiTBbDYjMDDwop/VYrEgODjYMH9N+NkYjL8ViIth+PDhGD58eJPwz5YkSQg0Ozsb+fn5whnib3/7G6xWK1wul08DPzxYe2hoKCZOnIjnn39eJDubNm0aHn74YcTGxtY7CLVlyxaoqgqHw/G7RGe321FeXi7+/3sqA+IP0ou/FkzTNDHyzFslf9p4apbaUR/37dsnLAlZlpGcnNzo5GOSJIExhpEjR4prM8aQnJyM2NhYOJ1OuFwuuFwuaJoGTdPgcDjgcrkQHh4uKgJd13H06FHxDhtTKTHGcPLkSRQUFEBVVUiShPbt25NiSMC+uyXy1Tt8jao/bXWZw7/88gsYY0JMbdu2FUm7G2OFcMFYrVYRHmj//v0ikIGqqlBVVUwV8f/feuutosUHgLVr1zZ6yoff4+OPPxarqBhjYpUSTSGRgK9auL8xAFitVpjN5t/VB7VYLKL1rC/jAm9xo6KikJiYCMaYiL919OhRn9dMc8uhvLwcGRkZYv46KioKCQkJhm4OQQK+6H7nlTSf6xtQCwkJEa1UaWkpKioqLur5AKCsrAxVVVViEMt90X1d4gOAGTNmCLPdbrdj4sSJcDgcQsR1lZ+39LIsY/r06cjLy4PJZAJjDJMnT4bNZvO5L0+QgOs1766k+cz7qN7o0KEDgN+icZSVlSE3N7fRfVBeSRw5cgROp1MImF+7zhHJ/yUDv/POO9G3b184HA6YzWZkZ2fjzjvvRElJiejPapom+tG8Zeb3mTFjBt5//32YTCY4HA5cd911SE1NBWOMViT5GU0qJhZvVcrLy5GXl1evkP6wGk+WccMNN3gk1eZmZUJCgiEP0+rVq9GvX79Gl1OSJKxatUqYzhaLBT179vTJhJVlGcuXL0evXr1QXl4Os9mMTZs2oXfv3liwYAFGjRqFgIAAj0ojKysLzz77LHbt2gWTySQqkrfffhuhoaG0pNBPRdEk4N5B+/fvZ9HR0QY3y8u1cS+s+Ph4du7cOY/VOXyFUPfu3cXxgYGB7MSJEz47QPBjvv32W7FaSZIkNnjwYJ8dMrgzyObNm4XHmHs0jhtuuIHdf//9bN68eezZZ59lkyZNYjfffLPY737sq6++Su6T5In1++Ef9iOPPOLhoYTLvO4XAFu9erWHKPnPK1asMAghISGB1dTUiJVK3lYD6bouVmBduHCBde7c2eCHzNcJ+yokftyOHTtY27ZtfY7Iwd9rYGAge+edd8jzigR8aQU8c+ZMJsuyaJku92YymZgsy+zdd9/1+nFrmsacTifr2bOnQYCDBw9m+fn5huPc1+9yfvrpJ9a7d29DBXDHHXc02h3SXcRnz55lU6dOZQEBAT7FxBo9ejQ7cuQItbwk4D9GwLiCkTn4fVeuXFmngBlj7Pvvv2dBQUEGEbdu3ZplZGQYhMz55ZdfWFpaGgsPDzeINyIigp0+fVqY5752N7wtkjh27BhbvHgxGzRoEGvbti0LDg5mQUFBrHXr1qxPnz5szpw5bO/evR4VAOG/NJmwsnwta2pqKl599dUrFgua33flypWYMGGC1zW2fLAnMzMTo0ePRlVVlSEmVfPmzdG1a1e0adMGuq7jl19+waFDh8SUEz82LCxMDD7x0Xf+r/tUDvec4qPEtad5mJe40NXV1SgrKxNhZd3dJCkuNI1CX9Pw4HZDhgxBVlYWHnjgAfzwww9CnCUlJdi5c6fHqDMXrt1uxy233IKVK1ciLi7OEFPa2yhwbcEePnwYq1evRosWLTBz5kyR5Mw9M0NAQIBhJJpRZgYSMOEp4vj4eGRnZ+P555/HW2+9hcLCwjqnyOx2O6KiojB9+nQ89thjwo2Si/eXX37BwYMH0a5dO0RGRor9paWlOHnyJPbu3YvNmzfjyy+/FE4Z1dXVmDt3rrAUuDhrG17cPZMgARNuItZ1Hc2aNcPChQuRmpqKzZs3IysrC7m5uYawsrGxsRg8eDCGDRuG5s2bG5xWAODHH39E3759UVBQAAAICgoSAq6oqDCE2VUUBTabDVVVVThx4kSd88wECZhoAL4QQNd1tGzZEhMmTMCECRMMAq0tJndTlrecu3fvRkFBgVioUFlZKfrMsiwLl0e+Qqmqqgq9e/fGU0891ejVUAQJmKjV2nHPLfdA7+7mrPvv3fu5/LwhQ4agc+fOyMnJ8bg+79sCQPv27XHbbbfh3nvvxe233y681UjAJGDiEgjZvZ/J+6H19T+5AK+77jpkZ2cjOzsbJ06cQH5+PioqKmAymRAWFoZ27dqhU6dOiImJMWR4YBRBkgRM/HGC9vU49r80oIMGDcKgQYPqPd59VRGJlwRM+InYeV+6rqn7+qaaCBIw4Sd9aYIQlTa9AoIgARMEQQImCIIETBDXCDSIdRlxd7gA4DH3yx06OO4ri2rvq4vaA10Nrdiqa/FC7bJ6u0/taSpvZawr/G5jjiVIwP5h7tQSS20ni4YcOi5msYEv53hz6fR1VZJ7nKzGlJEWT5CAm1TLK8syNm7ciF27dgEAIiMj8cgjj4h1vLIs4+jRo3jvvffESqbJkyfjxhtvBADk5+cjIyOjXkEwxhAZGYnU1FQAQHl5OdLT02G328V+/q+iKGjVqhWSkpLQrVs3j7Ju374dW7ZsEWXh9wB+W0jRqVMnJCUloWXLlqICyMvLw8svvwyLxQJN02C1WjFnzhxYLBZDGQHA4XAgLS0N1dXVUBQFNTU1SE1NRdu2bcl7rDFQRI5LG5GjvrJPmTLFcK3NmzczxpiIl7VmzRqv+3mQO1/KFx0dLc45c+aMT5kMJ06cyKqrq5mmacxutzPGGHvqqacaPLdly5Zs/vz5IjyQ3W5nycnJhmPccye7/ztv3jzDcUOGDGE1NTUUBaSR0CDWZSQoKAiqqiIwMBCKomD27NmGbAsWiwWqqiIgIACqqhqyOvDUKXzz1WRv3rw5VFWFyWTy2M/T16xYsQJTpkwxmMyBgYFQVRVWq9Xr/WRZxrlz5zBv3jzcc889AACz2Yy1a9eiQ4cOMJlMsFgsSEtLE5kheHbFI0eO4LnnnoPFYoHZbEb79u2xfv16WCwWWnRBJrR/m9Lug0qHDx/G8uXLMXXqVNEn5pkPamdQ4Pt4ZI2BAweiS5cuhgX/fNGDOzxwuyRJuPXWW5GYmAhd13H27Fl8/PHH0HUdJpMJq1atwowZM0T+I15WXoYJEyagWbNmYIzh119/xWeffSYqnXXr1mHhwoV45plnEBgYiLfffhu33XabIUPjjh07RHdh2rRpcDqdYv+bb76J4OBgijtNJrR/m9CpqaniGjymdatWrVhxcTHTdZ2tX79ehHcFwLZt2yausX//fsP9V61a1WCC7vz8fBYUFCQiTy5YsMBw3PLly0XQPUmShLnLGGMLFy4UYXTNZjMrKSkxnPvll1+y0NBQpigKU1WV2Ww2dubMGXFvboLz4HzLli1jjDH2yiuvGH7/+OOPU+haMqGbZmusqirOnj2L5557TqQ78ZW6pofqm/qpqKiA3W5HRUUFHA4Hxo0bh/DwcDgcDjDGcObMmTrPLSoqgsvlgsPhgMPhQL9+/bBo0SLRalZVVWHDhg0isfk//vEPxMfHw263Q5ZlPP3009ixYwfmzZsHRVFE3K/FixdTy/t7ZjboFVw5nE4nZFlGRkYGCgsLERQU5IvFBAA4duwYsrOzsXv3bmRnZ2PPnj3Yu3dvvfO+AQEBsFgsCAoKgtlsxq+//orKykqRL4knZqtrOsp903UdKSkpCAkJgcPhgCRJYoSd969Xrlwpol0WFhbi9ttvR2lpqTC9V65cCZPJ1Oj0qwQJ+IqiaRoiIiLQuXNnEczumWee8chXVNe5ALB48WLEx8ejb9++iI+PR0JCAhITE1FQUFCnGE6ePClE/5///AcpKSmoqakRUT8GDhzo8+CYJEkIDQ3FjTfeKPq2p0+fBvBbYjeXy4WYmBi89NJLIqQtH8TSNA0vvPAC4uLi6k2ZStAglr+OO8Bms+GFF17AqFGjAADvvPMOAgICxCDVRdXGdSzg5/Oq77zzDt555x2PkWi73Y6kpCQkJyfD6XR6HbGu65o2m038zuFwGK7rcrkwZcoUZGZm4sMPPxSDViNHjsTDDz/sNaY2QS1wk+D8+fMYPnw4JkyYAMYYHA4HXnvtNYOZXB+BgYEIDw9HaGgowsPDERYWhhYtWvjUmvG4W7w1TE5Oxrp160RL7Gtloes6zp07J37H8xdzcfOR8b/+9a+Gcx966CEAFBmTWuCmXHPKMqqrq7Fo0SKsXbsWdrtdhIatT4Q8M8SiRYsMmSG4aEJCQur0ZOrdu7fIWcxbvjVr1oh53PqC37lnf+A5i48fP44ff/xRVAQ33XSTGEjj15EkSWSkcO/7E9doC+wvtfbvLYcsy6isrERUVBQef/xxaJrWKHMyNDQUYWFhiIiIQFhYmGiFvS0I4C1hSkoKPv30U7EQweVyYd26dUJU9T0TH2xSFAUmkwmyLGPBggWiD8sYQ3Jystd309D/iWtIwHzKgZtol3vj5mdjpnzqgpuss2fPRrt27YRThq8meFFREQoKClBUVCS28+fP11m2vLw8dOjQAY8++igcDgfMZjM+/PBDvPrqq2LgqS6KiopQXFyMwsJC5OTkYPr06Xj//fdhMpngcDjQuXNnDB06VPhZE2RCeyUoKAiapl0SAV0MfKCG9/cutuV2rxSCgoKwePFi3H///ULU3lopPlcsSRLmzp2L+fPne7SyFosF3377LaKiogx9Ud6KMsawYMECbNq0Cbm5uTCbzZgzZw4GDRqEuLg42O12YQnwCsvpdGLAgAGicikrK4OmaWJQCgDeeOMNmM3mOud03Z+XuAYFzD/s6dOn4+uvv8axY8d8HvC51GbzbbfdhjvuuKPRrQ3vQ/J+ortVMW7cOLz22mv45ptvRJ/W2/mcyspKVFZWen1P7pWb+7peLiCbzYa33noL/fr1g6ZpcDgcGD9+PLKzs8XzuPd5GWNi/rZ2ZRYcHIy3334bAwYMqNcho6GImsRVLmAunnbt2mHHjh0irciVKId7Ks7GVkL8A68d4F2SJKSnp2PIkCHiQ29orXDt/YwxWK1WgxnOHS/cB6jsdjv69u2LWbNm4ZVXXoHNZsOhQ4cwd+5cPP/884ayurfG/H4WiwWtW7fG0KFDkZqaio4dO9YrXt535g4g1Apfwu+RNbEq0T2bwZWirpxG9ZVZkiQUFRWhpKREmKbR0dEefd5Tp06JUdqoqCjh3GG32/Hrr7/6VMG0a9dOjAyfOnVKtKJhYWEICwsT75Axhp9//lmc53K50LFjR0iShAsXLqC4uNjrMwYEBCAiIkKIuyFXyMrKSuTn54tKpnXr1ob5Y+IaErA3c/JKWQN/xDM1pdbJPZ8TQQK+6nHvAwOoMxZVXft99dByP8/9nNpWQ+3yuJ/rbZ+3QamLeW4azCIBEwQBcqUkCBIwQRAkYIIgSMAEQQImCKIJQMsJLyO13RprOz/wdCPuwdfdU6s0NI3E55Hdr8vdKrknVn1ztt7SqXhLoeKOpmkG5xpvDh31lYGfX9f167t37Wev7arZUNndn7muY/x9npumka4g/uK4wT/++ryprmTguYbu7ct+XyuCukTur3PXJODLKNRDhw7hxIkTAIDw8HAMGDDA0Hrl5+fj66+/FgsSeOoSACgtLUVWVlaD92nWrBmGDBkCAKipqcHWrVtFfOdOnTohNjbWUHG4L77Py8vD7t27cezYMdTU1CAyMhK33HILEhISRAQOd0cPHsiuoKAAANC8eXMMGjTIsN9ut2PLli2iDDExMYiLixP7t23bhtLSUrGm2L3lDQ8PR9euXUU8am8Cci/Tnj17sG/fPuTn58NqtaJTp07o06cPWrVq5XEsv96+fftw8uRJj/sDgM1mQ0xMDNq3b+9XFW7tPzpxmWJaT5061RBj+uDBg0zXdZHOZO3atYb9n3/+eaNTq7Rv316ck5eXZ9j32GOPGcrD05jk5+ezBx98kIWEhHi9Zrdu3dgHH3xgeCZN0xhjjCUlJYnjOnToIOJS8/0FBQUiLjUA9vDDDxvKEB0dXe/ztG7dmqWnpxvuWbsMGzZsYD179vR6fmhoKJs5cyYrLi42nMPvP27cuHrvHxAQwMaOHcvOnDljiLlNcaGvQWw2GxRFEauZnnjiCUONbjKZoCgKrFariHwhBitUVawQqs9cdN/HQ+zwc92jXnKT+bvvvkN8fDzefPNNlJaWelxbVVUcPHgQ9913HyZPnozq6mpDXzMoKEiUyVtYWkmS0Lx5c3FM7UUMISEhHs/q3grn5eXhscceQ3p6OmRZFv1pbhY/8cQTGDNmDL799luP1VqqquLChQt49dVXkZiYiNzcXI+ggTzNjbe0LpIkoaamBh999BEGDx6MCxcuiJaYBrGu0UEsTdNgt9uhKAo+//xzbNq0SYSi4YNY/EOtnVrFfYDrhhtuQGRkpGHRvq7ruOGGGzz6f/xa/MPl4j158iSGDRuGoqIiWCwW2O12aJqGzp07IygoCCdPnsS5c+eESZ+TkwOHwyGyDbo/k/tglbc+KN9Xe5DMvXyhoaHo1KkTgN9WMB06dEisA1+8eDGmTJmCZs2aiThg8+fPxwsvvACTyQRN0+ByudC8eXNERUWhqqpKrLSyWCw4duwYhg0bhuzsbLRo0cLwLnjZVFXFLbfcAlmW4XA4cOjQITidTlitVuTm5mLJkiVIS0vzr2iaZOBePhPaW2qVuLg4Zrfbma7rbMOGDT6nVlmxYkWjU6v83//9H2OMCZN92LBhIrUKANa/f3+WnZ0tTOvi4mL28ssvM5vNxh588EHD9bkpescddwhzs3v37iJTodPpZJqmsYKCAtasWTNxzOzZsw3vpEuXLmLfqFGjDNefPHmy4ZkPHjwo9n/33XfiXSmKwsxmM0tPT2cFBQVM13VWXV3NvvrqK9a3b19DKpdx48YZ3sGkSZPE/aOiogzZEbOzs1l4eDiTZZnJssw6dOggyu0vpjSZ0FewNVYUBUeOHMGbb74p1uM25nxv5pwv5p3ZbMaePXuwefNmEdMqPj4eW7ZsQa9evYSZGRYWhtTUVOzbtw/Lli3z2oJ6m3Lhi/dlWTa01g3hHslSlmUkJCQYpqd4GCNJkkTgAd6Kv/fee5g1axYiIiIgSRKsViv69u2LzMxM9OjRAw6HAyaTCf/+97+Rk5NjyPzo/u54F8Fut6NXr1649957RZehoKAAxcXFfvUdkQl9BeERHefPn4/JkyfDarX6fG5FRQVKSkoM5pwkSQgODvZppJTnMeJbeno6LBaLCHbnfg0eLtZdZN4qCofDgTNnzhiSlhcXF/vcZzx37hx2794NXddRXl6Ol156ScTkGjhwIKKjo8WIfGZmJiRJgtPpxODBg3HPPfeIzA+8m8HN37S0NAwdOlR0Mz755BN07ty5zsrNveKprq42jC/4EvSeBHwNtL4hISEwm80oLi7GuXPn8PLLL6Nfv34+iR4AnnrqKSxYsEAIlwe0y87ORuvWrRu8zqFDh0RA+euvvx7x8fFgjIkWuaqqqs55UFmWPcIKKYqCnJwcxMTEeLRqNTU1Ip51fa3vrl270LdvX49WfciQIVi3bp2wWn7++WcUFxeLa44YMcIjgJ8kSSKIX2JiIiIiIlBYWAgAOHjwYJ1/l6KiIthsNjidTmzduhVr1qwRoYA6duyI0NBQw3QUCfgaFXB4eDhmz56N6dOnQ5IkvPjii6L18GXhfkVFhUdcMJPJ5POi//LycvFzZGSkSMBtMpnw8ccf46GHHjKIjn+0uq4jOjpazFe7t666rhuEfymQZRn5+flYu3YtJk2aJMruLtaWLVvW60lls9kQHh4uBFxWVuYpBFVFYWEhunXrBuC3ONk8kJ+iKNB1HbNmzfL570MCvso5f/48Jk6ciLVr1yIrKwvFxcVYsmTJ7/pAao9c10dwcLD4ubCw0JBkrLy83JAypTaRkZGX3JRkjCEyMhI9e/YUfc5Dhw4hLy8P33//PSZPnozAwECkpKTAZrMZonwUFBTU+dyMMVRWVqKoqEj8rq4sjLwFdrcq+Cj5008/jZSUlAY91kjA1wi8j5ieno4ePXpAURQxQOLNK6j2R/Xkk09i1KhRhtQqsiwjIiLCJ4+hrl27YvPmzVBVFSdPnsS3336LhIQEYR107NgRqqrC4XBAVVX89NNPYioqJibGYKryj79Tp0746KOPDN5lFy5cQHJystcQuLXfR58+fbB+/Xrxu4KCAgwYMAAnTpwAYwxLly5FSkoKOnTogBYtWoj3tXHjRsyaNUuUj78/p9MJs9mM3bt349y5cyKONW9la98/ICAArVq1ws8//yyCAg4cOBBpaWno1atXvalnrhQ0Cn2FUBQFJSUl6N69uyHHUUNwwcTGxiIxMRFJSUlITExEnz59kJCQ4POo71133SWEzrND8A/0T3/6E44cOYIDBw7gxIkTWLlypThW13WPfioXgM1mQ5cuXRAXF4e4uDh06dIF3bt39zlpmtPphMvlgt1uF66cPN60rus4deoUSktLERISgiFDhoAxBrPZjO3bt+ODDz4QKV/4ezKbzaiqqsKcOXNE2RVFwejRo71aLy1atEB2djZiYmLEnHteXh5iY2OFK6i/QQK+ki//fy3FokWLEBwc3KiYyfUNCDV0DYfDgd69eyM5OVk4Znz11Ve48847RetjNpthNpuxb98+TJw4UTg7mM1m3H333XWaoNwxwuVyQdd1VFZW+vzh8+kni8UCq9WKEydO4PPPPxf9XbPZLEx3Lkq+auuBBx7Aiy++KMzpmpoafPnllxg8eDAOHDgAs9kMl8uFcePG4aabbjKkQuXY7Xa0aNECb731FhhjUFUVP/zwA+69914xkEUCJgwCliQJbdq0wZw5c3zqX3EhLVy4ULS6vAVOTEzEgAEDxOKC+oTDGMMbb7yBiIgI2O12WCwWfPLJJ7j55psxdOhQjB07FvHx8ejZsyeOHj0Ks9kMp9OJWbNmITo62qsA+DPV3nx9Fzt37hTPFB8fjx49euDUqVMwm81gjCEhIQE2mw0OhwPdu3fHwoULRVI2TdMwe/Zs3HTTTbj55pvRuXNn9O/fH998843wMmvfvj2WLl1apxBVVUVZWRn69++PadOmicrts88+w+uvv97gSPqV6osRl8kT69FHH2WKojBFUVjLli3Z+fPnxaKCyspK1r59e6YoCrNarUxRFJaVlSWuceDAAXGuoij1OuCfOnVKLGYICQlhqqoyRVHY3LlzRXm4J9V3331X74ICWZbFz3fddRdzOp3M5XIJj6Xk5GRRpltvvdXDU6uwsJCFhoaKY+bMmWN4J127dmWKogjvs7ruHxQUxI4cOcJ0XTfc/+9//7s4lntseft/p06d2A8//CAWNPD7T5kyRZStbdu2rKKigmmaxsrKylh0dLT4ewQGBrLc3FyviyrIE+saoaqqSoxqlpSUGPIk2Ww2LFmyBJqmoaamBpqmGfLoulwuca6vid14TiN+rrtTAve37tGjB/bs2YPp06ejefPmXs3itm3bIi0tDR999BEURTGsra2oqBBl8pY/iTGGkpIScUztaabS0lKPZ63dHeAeVV26dBEmM5/aWbx4MT7++GP07t3bo3V0uVwIDw/Ho48+iq+//hoxMTEec7iVlZWGvwk314ODg/HPf/5T/D0qKysxYsQIv1vQQOuBL9OIsyRJOHz4MH788UcAv83Z3n777cLZgH+s//3vf4V52rdvX8N64O3bt/tkig4dOhQBAQGoqalBZmam+LBjYmLqXQ+cn5+P3bt34/jx46iurkZYWBhiY2ORkJAgpp3cB74kScLu3bvF/GpISAgGDhxoOM5ut4s1yQDQsWNHIUS+Hth9Ttodi8WC6OhoxMbGepTVvUvBux179+7Fd999h7NnzxrWA0dERHicz++/f/9+nDp1CgBgtVoxdOhQQ4bIbdu2oaysDIqioKamBv3790erVq38Zm0wCZjw+4gc7q6ZF1O2i43I0RRS3ZCALyO1YzbVFz/KfZDLXWS+juZ6u15D8Z0uJq5UbXO+oWeqXYaGugONiUlV25HF15hY9f1Napfv94TmIQETBGGsUOgVEAQJmCAIEjBBECRggiABEwRBAiYIggRMEAQJmCBIwARBkIAJgiABEwQJmCAIEjBBECRggiBIwARBAiYIggRMEAQJmCAIEjBBkIAJgiABEwRBAiYIEjBBECRggiBIwARBkIAJggRMEAQJmCAIEjBBECRggiABEwRBAiYIggRMECRggiBIwARBkIAJgiABEwQJmCAIEjBBECRggiABEwRBAiYIggRMEAQJmCBIwARBkIAJgiABEwRBAiYIEjBBECRggiBIwARBAiYIggRMEAQJmCAIEjBBkIAJgiABEwRBAiYIggRMECRggiBIwARBkIAJggRMEETT4f8BkTU8i836MkIAAAAASUVORK5CYII='
+
 function Esc([string]$s) { if (-not $s) { return '' }; return [System.Security.SecurityElement]::Escape($s) }
 
 function Get-ShortResult([string]$Result) {
     # "Label: long message -> quarantine path (backup in ...)" -> short, printable
     $r = $Result -replace '^[^:]{1,40}:\s*', ''
-    $r = $r -replace '\s*->\s*C:\\ProgramData\\NerdyNeighbor[^|]*', '' -replace '\s*\((backup|XML backup)[^)]*\)', '' -replace 'HKEY_USERS\\S-1-5-21-[\d-]+', 'HKCU' -replace 'HKEY_LOCAL_MACHINE', 'HKLM'
+    $r = $r -replace ('\s*->\s*' + [regex]::Escape($DataRoot) + '[^|]*'), '' -replace '\s*\((backup|XML backup)[^)]*\)', '' -replace 'HKEY_USERS\\S-1-5-21-[\d-]+', 'HKCU' -replace 'HKEY_LOCAL_MACHINE', 'HKLM'
     $r = $r -replace '(Quarantined|Deleted) \S:\\(?:[^|]*\\)?([^\\|]+?)(\s*\(|\s*\||$)', '$1 $2$3'
     $r = $r -replace '(HK[A-Z]+)\\\S*\\([^\\\s|]+)', '$1\...\$2'
     $r = ($r -replace '\s+', ' ').Trim()
@@ -1612,30 +1736,42 @@ function Save-Report {
 td,th{text-align:left;padding:4px 8px;border-bottom:1px solid #e2e8f0;vertical-align:top;word-break:break-word}th{background:#f8fafc}
 h2{font-size:16px;margin:22px 0 6px}.ev td:first-child{white-space:nowrap;color:#64748b;width:170px}.small{font-size:12px;color:#64748b}
 .pbtn{float:right;background:#fff;color:#0f172a;border:0;border-radius:6px;padding:7px 14px;font-weight:600;cursor:pointer}
-.print{display:none}
+.print{position:absolute;left:-10000px;top:0}
+.print .sheet{width:7in;height:9.6in;overflow:hidden;display:flex;flex-direction:column;font-size:var(--base,10pt);background:#fff;color:#000;
+ font-family:Arial,Helvetica,sans-serif;line-height:1.3;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.print .header{display:flex;align-items:center;justify-content:space-between;flex:none;padding-bottom:10pt;border-bottom:3pt solid #000;margin-bottom:12pt}
+.print .brand{display:flex;align-items:center;gap:10pt}.print .logo{width:44pt;height:44pt;object-fit:contain}
+.print .brand-name{font-size:16pt;font-weight:700;white-space:nowrap}.print .brand-tagline{font-size:8pt;text-transform:uppercase;letter-spacing:1.5pt;white-space:nowrap}
+.print .doc-info{text-align:right}.print .doc-title{font-size:14pt;font-weight:700;text-transform:uppercase;letter-spacing:1pt;white-space:nowrap}
+.print .doc-date{font-size:9pt;margin-top:3pt;white-space:nowrap}
+.print .body{flex:1 1 auto;min-height:0;overflow:hidden;display:flex;flex-direction:column;gap:1.15em}
+.print .info{display:flex;border:1.5pt solid #000;flex:none}.print .info-cell{flex:1 1 auto;padding:.45em .8em;border-right:1.5pt solid #000;min-width:0}
+.print .info-cell:last-child{border-right:none;flex-grow:1.6}.print .info-label{font-size:.72em;font-weight:700;text-transform:uppercase;letter-spacing:1pt}
+.print .info-value{font-size:1em;margin-top:.15em;white-space:nowrap;overflow:hidden}.print .blank{display:inline-block;width:100%;border-bottom:1pt solid #000;height:1.05em}
+.print .section-title{font-size:1.05em;font-weight:700;text-transform:uppercase;letter-spacing:1.5pt;margin-bottom:.4em}
+.print table{width:100%;table-layout:fixed;border-collapse:collapse;font-size:1em}
+.print th{background:#000;color:#fff;text-align:left;padding:.38em .7em;font-size:.85em;font-weight:700;text-transform:uppercase;letter-spacing:1pt}
+.print td{padding:.42em .7em;border-bottom:1pt solid #000;vertical-align:top;word-break:break-word}.print td.bold{font-weight:700}
+.print .lv{display:inline-block;border:1pt solid #000;padding:0 .4em;font-size:.75em;font-weight:700;margin-right:.4em;vertical-align:1px}
+.print .lv.HIGH{background:#000;color:#fff}
+.print .result,.print .notice{border:3pt solid #000;padding:1.25em 1.1em .85em;position:relative;margin-top:.4em;flex:none}
+.print .notice{margin-top:.6em;padding:1.3em 1.1em .75em}
+.print .badge{position:absolute;top:-.85em;left:1.1em;background:#000;color:#fff;padding:.25em .8em;font-size:.85em;font-weight:700;text-transform:uppercase;letter-spacing:2pt}
+.print .result-text{font-size:1.05em;line-height:1.4}.print .notice-list{padding-left:1.2em;line-height:1.4}.print .notice-list li{margin-bottom:.2em}
+.print .chk{display:grid;grid-template-columns:1fr 1fr 1fr;gap:.2em 1em;font-size:.92em}.print .ref{font-size:.92em}
+.print .footer{flex:none;margin-top:10pt;padding-top:8pt;border-top:1pt solid #000;display:flex;justify-content:space-between;font-size:9pt}
 @media print{
- @page{size:letter portrait;margin:11mm}
- body{background:#fff;color:#000;font-size:12.5px;line-height:1.4;-webkit-print-color-adjust:exact;print-color-adjust:exact}
- .screen{display:none}.print{display:block}
- .ph{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:3px solid #000;padding-bottom:5px}
- .ph .t{font-size:24px;font-weight:700}.ph .s{font-size:12px;margin-top:3px}.ph .b{text-align:right;font-size:12px}
- .res{border:3px solid #000;border-radius:5px;padding:10px 14px;margin:14px 0;font-size:14px}.res b{font-size:17px}
- h3{font-size:12.5px;text-transform:uppercase;letter-spacing:.6px;border-bottom:2px solid #000;margin:16px 0 6px;padding-bottom:3px}
- table.pt{width:100%;border-collapse:collapse;font-size:12px}table.pt th{text-align:left;border-bottom:2px solid #000;padding:5px 6px;background:#fff}
- table.pt td{border-bottom:1px solid #888;padding:6px 6px;vertical-align:top;background:#fff}
- .lv{display:inline-block;border:1.5px solid #000;border-radius:2px;padding:1px 6px;font-size:10px;font-weight:700;white-space:nowrap}
- .lv.HIGH{background:#000;color:#fff}.lv.LOW{border-style:dashed}.lv.INFO{border-style:dotted}
- .ok{font-weight:700}.chk{display:grid;grid-template-columns:1fr 1fr 1fr;gap:3px 16px;font-size:11.5px}
- .pf{margin-top:18px;border-top:1px solid #000;padding-top:6px;font-size:10px;text-align:center}.ref{font-size:11px;margin-top:8px}
+ @page{size:letter portrait;margin:.5in .6in}
+ body{background:#fff;margin:0}.wrap{padding:0;max-width:none}.screen{display:none}.print{position:static}
 }
 '@
     [void]$sb.Append("<!doctype html><html><head><meta charset='utf-8'><title>Remote Access Audit - $(Esc $Computer)</title><style>$css</style></head><body><div class='wrap'>")
-    [void]$sb.Append("<div class='screen'><div class='hdr'><button class='pbtn' onclick='window.print()'>Print (1 page)</button><h1>Remote Access Audit</h1><div class='sub'>Nerdy Neighbor &middot; v$RAA_Version</div><div class='meta'>")
+    [void]$sb.Append("<div class='screen'><div class='hdr'><button class='pbtn' onclick='window.print()'>Print (1 page)</button><h1>Remote Access Audit</h1><div class='sub'>$(Esc $RAA_Brand.Name) &middot; v$RAA_Version</div><div class='meta'>")
     foreach ($m in @(@('Computer', $Computer), @('Windows', $osName), @('Scanned', $ScanTime), @('Findings', "$($counts.HIGH) high / $($counts.MEDIUM) medium / $($counts.LOW) low"), @('Fixed', $fixed))) {
         [void]$sb.Append("<div class='m'>$(Esc $m[0])<b>$(Esc ([string]$m[1]))</b></div>")
     }
     $riskMsg = @{ HIGH = 'High risk: remote-access tools or backdoors that need attention.'; MEDIUM = 'Items worth reviewing with the customer.'; LOW = 'Only low-level items found.'; CLEAN = 'No remote-access indicators found.' }[$risk]
-    [void]$sb.Append("</div></div><div class='risk' style='background:$riskColor'>Risk: $risk &mdash; $riskMsg (open items only; fixed items excluded)</div>")
+    [void]$sb.Append("</div></div><div class='risk' style='background:$riskColor'>Risk: ${risk}: $riskMsg (open items only; fixed items excluded)</div>")
 
     $order = @{ HIGH = 0; MEDIUM = 1; LOW = 2; INFO = 3 }
     foreach ($grp in ($script:Findings | Sort-Object { $order[$_.Severity] }, Category | Group-Object Category)) {
@@ -1669,35 +1805,95 @@ h2{font-size:16px;margin:22px 0 6px}.ev td:first-child{white-space:nowrap;color:
     }
     [void]$sb.Append("</table><p class='small'>Trusted tools (reported as INFO): $(Esc ($TrustList -join ', ')). Run by $(Esc $RunBy).</p></div></div></div>")
 
-    # ---- one-page, black-and-white print summary (shown only when printing) ----
+    # ---- one-page, black-and-white customer report (shown only when printing) ----
+    # Same layout as the phone cleanup report: brand header, result box, found-and-fixed table,
+    # checks, safety tips, address footer. A fit script shrinks the font so it is always one page.
     $issues = @($script:Findings | Where-Object { $_.Severity -ne 'INFO' } | Sort-Object { $order[$_.Severity] }, Category, Title)
     $info = @($script:Findings | Where-Object { $_.Severity -eq 'INFO' })
+    $serious = @($issues | Where-Object { $_.Severity -in 'HIGH', 'MEDIUM' })
     $nFixed = @($issues | Where-Object { $_.Status -eq 'Fixed' }).Count
-    $nOpen = @($issues | Where-Object { $_.Status -ne 'Fixed' }).Count
-    $verdict = @{ HIGH = 'HIGH RISK - remote-access tools or backdoors still need attention.'; MEDIUM = 'Items still need review.'; LOW = 'Only minor items remain.'; CLEAN = 'No remote-access threats remain on this computer.' }[$risk]
-    [void]$sb.Append("<div class='print'><div class='ph'><div><div class='t'>Remote Access Audit</div><div class='s'>$(Esc $Computer) &middot; $(Esc $osName) &middot; scanned $(Esc $ScanTime)</div></div><div class='b'><b>Nerdy Neighbor</b><br>audit.nerdyneighbor.net</div></div>")
-    [void]$sb.Append("<div class='res'><b>Result: $risk</b> &mdash; $verdict<br>$($issues.Count) issue$(if ($issues.Count -ne 1) { 's' }) found &middot; <b>$nFixed fixed</b> &middot; $nOpen still open &middot; 14 checks run</div>")
-    [void]$sb.Append('<h3>Findings</h3>')
-    if ($issues.Count) {
-        [void]$sb.Append("<table class='pt'><tr><th style='width:58px'>Level</th><th>What was found</th><th style='width:42%'>Result</th></tr>")
-        foreach ($f in $issues) {
-            $res = switch ($f.Status) {
-                'Fixed'   { "<span class='ok'>&#10003; Fixed</span> &mdash; $(Esc (Get-ShortResult $f.Result))" }
-                'Partial' { "<span class='ok'>Partly fixed</span> &mdash; $(Esc (Get-ShortResult $f.Result))" }
-                'Failed'  { "<b>NOT FIXED</b> &mdash; $(Esc (Get-ShortResult $f.Result))" }
-                default   { '<b>Not fixed</b> &mdash; review with technician' }
-            }
-            [void]$sb.Append("<tr><td><span class='lv $($f.Severity)'>$($f.Severity)</span></td><td>$(Esc $f.Title)</td><td>$res</td></tr>")
-        }
-        [void]$sb.Append('</table>')
-    } else { [void]$sb.Append('<div>No issues found.</div>') }
-    if ($info.Count) { [void]$sb.Append("<div class='ref'><b>For reference (not a problem):</b> $(Esc (($info | ForEach-Object { $_.Title }) -join '; ')).</div>") }
-    [void]$sb.Append("<h3>What was checked</h3><div class='chk'>")
-    foreach ($r in $script:ScanResults) {
-        [void]$sb.Append("<div>&#10003; $(Esc $r.Name)$(if ($r.Error) { ' (error)' })</div>")
+    $nOpen = @($serious | Where-Object { $_.Status -ne 'Fixed' }).Count
+    $nLow = @($issues | Where-Object { $_.Severity -eq 'LOW' -and $_.Status -ne 'Fixed' }).Count
+    $plural = { param($n, $w) "$n $w$(if ($n -ne 1) { 's' })" }
+    $lowNote = if ($nLow) { " $(& $plural $nLow 'low-risk item') $(if ($nLow -eq 1) { 'was' } else { 'were' }) noted and left in place." } else { '' }
+    $resultText = if ($nOpen) {
+        "<b>$(& $plural $nOpen 'problem') still $(if ($nOpen -eq 1) { 'needs' } else { 'need' }) attention.</b>$(if ($nFixed) { " We fixed $(& $plural $nFixed 'other problem')." }) Your technician will go over the rest with you."
+    } elseif ($nFixed) {
+        "<b>No remote-access threats remain on this computer.</b> We found and fixed $(& $plural $nFixed 'problem').$lowNote"
+    } elseif ($nLow) {
+        "<b>No remote-access threats were found on this computer.</b>$lowNote"
+    } else {
+        "<b>No remote-access threats were found on this computer.</b> All $($script:ScanResults.Count) checks came back clean."
     }
+    $logo = $RAA_Brand.Logo
+    if (-not $logo -and $RAA_Brand -eq $RAA_Default) { $logo = $RAA_NNLogo }
+    $winShort = ($osName -replace '^Microsoft\s+', '' -replace '\s*\(build[^)]*\)', '' -replace '\s+(32|64)-bit', '').Trim()
+    $svcDate = (Get-Date).ToString('MMMM d, yyyy', [Globalization.CultureInfo]::InvariantCulture)
+    [void]$sb.Append("<div class='print'><div class='sheet'><div class='header'><div class='brand'>")
+    if ($logo) { [void]$sb.Append("<img src='$(Esc $logo)' alt='' class='logo'>") }
+    [void]$sb.Append("<div><div class='brand-name'>$(Esc $RAA_Brand.Name)</div>$(if ($RAA_Brand.Tagline) { "<div class='brand-tagline'>$(Esc $RAA_Brand.Tagline)</div>" })</div></div>")
+    [void]$sb.Append("<div class='doc-info'><div class='doc-title'>Remote Access Cleanup</div><div class='doc-date'>Service date: $svcDate</div></div></div><div class='body'>")
+    [void]$sb.Append("<div class='info'>")
+    foreach ($c in @(@('Computer', $Computer), @('Windows', $winShort), @('Scanned', $ScanTime), @('Customer', ''))) {
+        $v = if ($c[1]) { Esc $c[1] } else { "<span class='blank'></span>" }
+        [void]$sb.Append("<div class='info-cell'><div class='info-label'>$($c[0])</div><div class='info-value'>$v</div></div>")
+    }
+    [void]$sb.Append("</div><div class='result'><div class='badge'>Result</div><div class='result-text'>$resultText</div></div>")
+    if ($issues.Count) {
+        # Collapse long runs of low-risk items (e.g. 20 unsigned helper programs) into one row
+        $rows = @()
+        foreach ($g in ($issues | Group-Object { "$($_.Severity)|$($_.Category)" })) {
+            $items = @($g.Group)
+            if ($items[0].Severity -eq 'LOW' -and $items.Count -gt 3) {
+                $fx = @($items | Where-Object { $_.Status -eq 'Fixed' }).Count
+                $rows += , @($items[0].Category, 'LOW', "$($items.Count) items, for example: $(($items | Select-Object -First 2 | ForEach-Object { $_.Title }) -join '; ')", $(if ($fx -eq $items.Count) { "<b>Fixed.</b>" } elseif ($fx) { "<b>$fx fixed</b>, the rest are low risk and were left in place." } else { 'Low risk, left in place.' }))
+                continue
+            }
+            foreach ($f in $items) {
+                $short = Esc (Get-ShortResult $f.Result)
+                $did = switch ($f.Status) {
+                    'Fixed'   { "<b>Fixed.</b> $short" }
+                    'Partial' { "<b>Partly fixed.</b> $short" }
+                    'Failed'  { "<b>Not fixed.</b> $short" }
+                    default   { if ($f.Severity -eq 'LOW') { 'Low risk, left in place.' } else { '<b>Not fixed.</b> Review with your technician.' } }
+                }
+                $rows += , @($f.Category, $f.Severity, (Esc $f.Title), $did)
+            }
+        }
+        [void]$sb.Append("<div class='section'><div class='section-title'>What we found and fixed</div><table><colgroup><col style='width:19%'><col style='width:45%'><col></colgroup><thead><tr><th>Area</th><th>What we found</th><th>What we did</th></tr></thead><tbody>")
+        foreach ($r in $rows) {
+            $catText = if ($r[0] -like '*:*') { $r[0] } else { $r[0] }
+            [void]$sb.Append("<tr><td class='bold'>$(Esc $catText)</td><td><span class='lv $($r[1])'>$($r[1])</span>$(if ($r[2] -match '^\d+ items, for example') { Esc $r[2] } else { $r[2] })</td><td>$($r[3])</td></tr>")
+        }
+        [void]$sb.Append('</tbody></table></div>')
+    }
+    [void]$sb.Append("<div class='section'><div class='section-title'>What we checked</div><div class='chk'>")
+    foreach ($r in $script:ScanResults) { [void]$sb.Append("<div>&#10003; $(Esc $r.Name)$(if ($r.Error) { ' (could not finish)' })</div>") }
     [void]$sb.Append('</div>')
-    [void]$sb.Append("<div class='pf'>Removed files are kept in quarantine (not deleted) and registry changes were backed up first: C:\ProgramData\NerdyNeighbor\RemoteAccessAudit. Run by $(Esc $RunBy) &middot; Remote Access Audit v$RAA_Version</div></div></body></html>")
+    if ($info.Count) { [void]$sb.Append("<div class='ref' style='margin-top:.6em'><b>Allowed, not a problem:</b> $(Esc (($info | ForEach-Object { $_.Title }) -join '; ')).</div>") }
+    [void]$sb.Append('</div>')
+    $call = if ($RAA_Brand.Phone) { "Someone asking to connect to your computer? Hang up and <b>call us</b> at $(Esc $RAA_Brand.Phone)." } else { 'Someone asking to connect to your computer? Hang up and <b>call us</b>.' }
+    $tips = @(
+        'Microsoft, Amazon, your bank and other companies <b>will never call you</b> and ask to connect to your computer.',
+        '<b>Never install a program</b> a caller, email or pop-up tells you to install.',
+        'If a scammer had access, <b>change the passwords for your email and bank accounts</b> and turn on 2-step verification where offered.',
+        'Watch your bank and credit card statements. If you gave anyone payment or gift card details, <b>call your bank right away</b>.',
+        $call)
+    [void]$sb.Append("<div class='notice'><div class='badge'>How to stay safe</div><ul class='notice-list'>$(($tips | ForEach-Object { "<li>$_</li>" }) -join '')</ul></div>")
+    $contact = (@($RAA_Brand.Phone, $RAA_Brand.Website) | Where-Object { $_ }) -join ' &middot; '
+    [void]$sb.Append("</div><div class='footer'><div>$(Esc $RAA_Brand.Address)</div><div>$contact</div></div></div></div>")
+    [void]$sb.Append(@'
+<script>
+(function () {
+  // Shrink the base font until the report fits the fixed sheet (one page guaranteed).
+  var sheet = document.querySelector('.print .sheet'), body = sheet.querySelector('.body');
+  var size = 12;
+  function set() { sheet.style.setProperty('--base', size + 'pt'); }
+  set();
+  for (var i = 0; i < 80 && body.scrollHeight > body.clientHeight + 0.5 && size > 6; i++) { size -= 0.1; set(); }
+})();
+</script></body></html>
+'@)
 
     $base = if ($BaseName) { $BaseName } else { Join-Path $OutDir "RemoteAccessAudit_$($Computer)_$RunStamp" }
     [IO.File]::WriteAllText("$base.html", $sb.ToString(), (New-Object System.Text.UTF8Encoding($false)))
@@ -1912,7 +2108,7 @@ function Show-AuditWindow {
     $script:UI = $ui; $script:Window = $window; $script:CardUi = @{}; $script:LastReport = ''
 
     $os = Get-WmiObject Win32_OperatingSystem -ErrorAction SilentlyContinue
-    $ui.tbSub.Text = "$env:COMPUTERNAME  -  $($os.Caption)  -  scanned $(Get-Date -Format 'yyyy-MM-dd HH:mm')  -  v$RAA_Version"
+    $ui.tbSub.Text = "$($RAA_Brand.Name)  -  $env:COMPUTERNAME  -  $($os.Caption)  -  scanned $(Get-Date -Format 'yyyy-MM-dd HH:mm')  -  v$RAA_Version"
 
     $ui.cbFilter.Add_SelectionChanged({ Build-List })
     $ui.btnClose.Add_Click({ $script:Window.Close() })
