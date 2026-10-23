@@ -32,7 +32,7 @@ try {
         [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 } catch {}
 
-$RAA_Version = '3.0.0'
+$RAA_Version = '3.0.1'
 $RAA_Source  = 'https://api.github.com/repos/nerd-industries/Remote-Access-Audit/contents/RemoteAccessAudit.ps1'
 
 function Test-IsAdmin {
@@ -637,9 +637,17 @@ function Invoke-Uninstaller {
     $p = Start-Process -FilePath "$env:windir\System32\cmd.exe" -ArgumentList '/c', "`"$cmd`"" -PassThru -WindowStyle Normal
     if (-not $p.WaitForExit(900000)) { return "Uninstaller still running after 15 minutes: $cmd" }
     $code = $p.ExitCode
-    Start-Sleep -Seconds 2
+    # Windows can take a while to drop the Programs and Features entry after the
+    # uninstaller exits (and some uninstallers hand off to a child and exit early),
+    # so keep checking for up to 45 seconds before calling it a failure.
     $still = $false
-    if ($D.Key) { $still = Test-Path -LiteralPath (ConvertTo-PSReg $D.Key) }
+    if ($D.Key) {
+        $deadline = (Get-Date).AddSeconds(45)
+        do {
+            Start-Sleep -Seconds 2
+            $still = Test-Path -LiteralPath (ConvertTo-PSReg $D.Key)
+        } while ($still -and (Get-Date) -lt $deadline)
+    }
     if ($code -in 0, 1605, 1614, 3010 -and -not $still) { return "Uninstalled $($D.Name) (exit code $code)" }
     if (-not $still) { return "Uninstaller finished (exit code $code); $($D.Name) no longer appears in Programs and Features" }
     throw "Uninstaller exit code $code and $($D.Name) is still listed in Programs and Features. It may need the user to click through it - try again, or remove it from Programs and Features."
